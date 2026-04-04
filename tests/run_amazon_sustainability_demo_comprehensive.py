@@ -622,18 +622,23 @@ class CNNClassifier(nn.Module):
         self.backbone = backbone
         self.num_classes = num_classes
 
-        # Get backbone output dimension
+        # Get backbone output dimension by checking with dummy input
         with torch.no_grad():
             dummy_input = torch.randn(1, 3, IMG_SIZE, IMG_SIZE)
             backbone_out = self.backbone(dummy_input)
             if isinstance(backbone_out, tuple):
                 backbone_out = backbone_out[0]
-            self.backbone_dim = backbone_out.view(backbone_out.size(0), -1).shape[1]
+
+            # If output is 4D (batch, channels, height, width), pool and flatten
+            if len(backbone_out.shape) == 4:
+                pooled = F.adaptive_avg_pool2d(backbone_out, (1, 1))
+                self.backbone_dim = pooled.view(pooled.size(0), -1).shape[1]
+            else:
+                # Already flattened or 2D
+                self.backbone_dim = backbone_out.view(backbone_out.size(0), -1).shape[1]
 
         # Custom classification head with regularization
         self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, 1)),  # Global average pooling
-            nn.Flatten(),
             nn.Dropout(dropout),
             nn.Linear(self.backbone_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
@@ -646,12 +651,16 @@ class CNNClassifier(nn.Module):
         features = self.backbone(x)
         if isinstance(features, tuple):
             features = features[0]
-        # Don't apply AdaptiveAvgPool2d again if already applied
+
+        # Apply global average pooling if features are 4D
         if len(features.shape) == 4:
-            return self.classifier(features)
-        else:
-            # Already flattened
-            return self.classifier[2:](features)  # Skip pooling and flattening
+            features = F.adaptive_avg_pool2d(features, (1, 1))
+
+        # Flatten
+        features = features.view(features.size(0), -1)
+
+        # Apply classifier head
+        return self.classifier(features)
 
     def freeze_backbone(self):
         """Freeze all backbone parameters."""
@@ -782,10 +791,15 @@ def build_inception_backbone():
     try:
         from torchvision.models import inception_v3, Inception_V3_Weights
 
-        model = inception_v3(weights=Inception_V3_Weights.IMAGENET1K_V1, aux_logits=False)
-        # Remove final layers
-        model.fc = nn.Identity()
-        return model
+        # Load inception - we'll extract features before final layers
+        model = inception_v3(weights=Inception_V3_Weights.IMAGENET1K_V1)
+
+        # Remove classifier layers, keep only feature extraction
+        # InceptionV3 structure: Conv2d_1a through Mixed_7c, then avgpool + dropout + fc
+        # We want everything up to (and including) Mixed_7c
+        backbone = nn.Sequential(*list(model.children())[:-3])  # Remove avgpool, dropout, fc
+
+        return backbone
     except ImportError:
         # Fallback: simple Inception-style module
         class InceptionModule(nn.Module):
