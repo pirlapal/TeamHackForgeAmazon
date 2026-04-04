@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "hackforge"
+version = "0.5.0"
+description = "HackForge: Transfer Learning for Classical & Deep Learning — from-scratch library extending transfer techniques (LoRA, EWC, progressive unfreezing, CKA, model merging) from classical ML to deep neural networks with integrated CO2 tracking."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "HackForge contributors"},
+]
+keywords = [
+    "transfer-learning",
+    "classical-ml",
+    "deep-learning",
+    "green-ai",
+    "carbon-emissions",
+    "lora",
+    "ewc",
+    "bayesian-transfer",
+    "negative-transfer",
+    "progressive-unfreezing",
+    "model-merging",
+    "ties-merging",
+    "task-arithmetic",
+    "lora-soups",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+datasets = ["pandas>=1.5", "scikit-learn>=1.2", "seaborn>=0.12"]
+viz = ["matplotlib>=3.6"]
+carbon = ["codecarbon>=2.0"]
+dl = ["pynvml>=11.0", "transformers>=4.30", "datasets>=2.14"]
+all = ["matplotlib>=3.6", "codecarbon>=2.0", "pandas>=1.5", "scikit-learn>=1.2", "seaborn>=0.12", "pynvml>=11.0", "transformers>=4.30", "datasets>=2.14"]
+dev = ["pytest>=7.0", "matplotlib>=3.6", "pandas>=1.5", "scikit-learn>=1.2", "seaborn>=0.12"]
+
+[project.urls]
+Homepage = "https://github.com/dgupta98/HackForge"
+Documentation = "https://github.com/dgupta98/HackForge#readme"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["libraries*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
