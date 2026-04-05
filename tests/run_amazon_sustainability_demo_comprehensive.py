@@ -3,84 +3,41 @@ HackForge - Amazon Sustainability Challenge Demo (Comprehensive Edition)
 =========================================================================
 
 A unified ML + DL demo showcasing how transfer learning enables greener AI
-across the entire spectrum from classical linear models to state-of-the-art
-deep convolutional networks.
+across the entire spectrum from classical linear models to deep CNNs.
 
-REAL-WORLD USE CASE: MEDICAL IMAGE CLASSIFICATION
---------------------------------------------------
-Problem: Breast cancer detection from histopathology images
-- Medical imaging datasets are expensive and require expert annotation
-- Different hospitals use different imaging protocols (domain shift)
-- False negatives are life-threatening - high accuracy is critical
-- Models must generalize across patient populations and equipment
+SYNTHETIC PROOF-OF-CONCEPT DEMONSTRATION
+-----------------------------------------
+This demo uses synthetic image data that mimics the structure of real
+histopathology datasets (class imbalance, domain shift, ImageNet-scale
+inputs). It is NOT a clinical evaluation. The purpose is to demonstrate:
+  - A complete transfer learning evaluation pipeline (freeze/fine-tune/progressive)
+  - Carbon tracking methodology (time × power × PUE × grid intensity)
+  - Low-data regime comparison (how scratch vs transfer behave as data shrinks)
+  - Parameter efficiency accounting and edge deployment feasibility
 
-Why Transfer Learning?
-- Leverage models pretrained on ImageNet (1.2M images, 1000 classes)
-- Adapt to medical domain with limited labeled data (100-1000 samples)
-- Reduce training time from days to hours
-- Achieve expert-level performance with 10x less data
+Synthetic data does not replicate the feature complexity of real tissue.
+On real datasets (BreakHis, PatchCamelyon), pretrained backbones typically
+outperform scratch at low data because ImageNet features transfer to
+natural-image textures. Synthetic iid noise does not benefit from this.
+For real clinical validation, replace with BreakHis (7,909 images, 82
+patients, patient-aware splits) or PatchCamelyon (327K patches).
 
-Why Sustainability Matters in Healthcare AI?
-- Medical centers in developing countries have limited compute resources
-- Parameter-efficient methods enable edge deployment on hospital servers
-- Carbon reduction means AI is accessible to underserved communities
-- Faster training = faster clinical deployment = more lives saved
+HARDWARE & CARBON MEASUREMENT
+------------------------------
+  - CUDA + NVIDIA GPU: NVML Energy API (millijoule-accurate)
+  - Apple MPS / CPU:   Time-based estimation (power_watts × seconds)
+  NVML is NVIDIA-only. MPS and CPU use manual TDP-based estimation.
 
-AMAZON SUSTAINABILITY CHALLENGE ALIGNMENT:
-------------------------------------------
-1. MINIMIZING WASTE
-   - Computational waste: 85-99% CO2 reduction through transfer learning
-   - Resource waste: 900x parameter reduction with LoRA on transformers
-   - Time waste: 30x faster convergence across all model families
-   - Training waste: 10+ architectures compared, best model selected once
-
-2. TRACKING ECOLOGICAL EFFECTS
-   - Real-time GPU/CPU carbon tracking via NVML
-   - Per-experiment CO2 reporting across all architectures
-   - Comparative emissions analysis (VGG vs ResNet vs EfficientNet)
-   - Energy efficiency metrics for deployment decisions
-
-3. GREENER AI PRACTICES
-   - Parameter-efficient fine-tuning (LoRA on CNNs and Transformers)
-   - Negative transfer detection (prevents wasted compute)
-   - Progressive unfreezing with discriminative learning rates
-   - Model reuse across hospitals, imaging protocols, patient demographics
-   - Regularization prevents overfitting = less hyperparameter search = less waste
-
-COMPREHENSIVE TRANSFER LEARNING ARCHITECTURES:
-----------------------------------------------
-Classical ML (Scenarios 1-3):
-  - Bayesian Transfer (closed-form, zero gradient steps!)
-  - Regularized Transfer
-  - Statistical Mapping
-
-Deep Learning CNNs (Scenario 4):
-  - VGG Family: VGG16, VGG19 (depth through stacking)
-  - ResNet Family: ResNet50, ResNet101 (residual connections)
-  - Inception Family: InceptionV3 (multi-scale feature extraction)
-  - Xception (depthwise separable convolutions)
-  - EfficientNet Family: B0, B1, B2, B3, B4, B5, B6, B7 (compound scaling)
-  - MobileNet: MobileNetV2 (efficient mobile deployment)
-  - DenseNet: DenseNet121 (dense connections)
-  - NASNet: NASNetMobile (neural architecture search)
-
-Deep Learning Transformers (Scenario 5):
-  - DistilBERT (text classification with LoRA)
-
-SCALABILITY & IMPACT:
----------------------
-- Works from 442-sample datasets to 66M-parameter models
-- From-scratch PyTorch + TensorFlow/Keras for maximum compatibility
-- Measurable: every experiment reports CO2, time, accuracy, and parameters
-- Inclusive: when AI requires less compute, more people can build it
-- Educational: detailed comments explain every component
+ARCHITECTURE REFERENCE (TorchVision official):
+  - ResNet50:       25,557,032 total params, ~97.8 MB (float32)
+  - EfficientNetB0:  5,288,548 total params, ~20.5 MB (float32)
+  - MobileNetV2:     3,504,872 total params, ~13.6 MB (float32)
+  (Our models add a custom classifier head on top of these backbones.)
 
 Usage:
     python -m tests.run_amazon_sustainability_demo_comprehensive
-    python -m tests.run_amazon_sustainability_demo_comprehensive --seeds 5 --full
     python -m tests.run_amazon_sustainability_demo_comprehensive --quick
-    python -m tests.run_amazon_sustainability_demo_comprehensive --cnn-only
-    python -m tests.run_amazon_sustainability_demo_comprehensive --compare-architectures
+    python -m tests.run_amazon_sustainability_demo_comprehensive --full
 """
 
 import argparse
@@ -97,18 +54,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset, Dataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset, Subset
 import torch.optim as optim
-from torch.optim.lr_scheduler import (
-    ReduceLROnPlateau, CosineAnnealingLR, StepLR, ExponentialLR
-)
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Classical ML imports
 from libraries.metrics import set_seed, mse, r2_score, accuracy_from_logits
 from libraries.train_core import fit_linear_sgd, fit_logistic_sgd
 from libraries.transfer import (
@@ -118,90 +72,48 @@ from libraries.transfer import (
 )
 from libraries.negative_transfer import should_transfer
 from libraries.carbon import CarbonTracker, compare_emissions
-
-# Deep learning imports
 from libraries.dl.lora import LoRAInjector
 from libraries.dl.negative_transfer import compute_cka
 from libraries.dl.carbon import GPUCarbonTracker
 from libraries.dl.train import train_epoch, evaluate
-
-# Dataset imports
 from tests.real_datasets import (
     load_california_housing_linear,
     load_breast_cancer_logistic,
     load_diabetes_linear,
 )
 
-
 # ============================================================================
-# CONSTANTS & CONFIGURATION
+# CONSTANTS
 # ============================================================================
 
-TRANSFORMER_MODEL_NAME = "distilbert-base-uncased"
+IMG_SIZE = 224
+NUM_MEDICAL_CLASSES = 2
+FOCUSED_ARCHITECTURES = ["ResNet50", "EfficientNetB0", "MobileNetV2"]
+DATA_REGIMES = [1.0, 0.5, 0.25, 0.10]
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
 
-# Medical imaging constants
-IMG_SIZE = 96  # Reduced from 224 for faster training in demo
-NUM_MEDICAL_CLASSES = 2  # Binary: benign vs malignant
-
-# Architecture families
-CNN_ARCHITECTURES = [
-    "VGG16", "VGG19",
-    "ResNet50", "ResNet101",
-    "InceptionV3",
-    "Xception",
-    "EfficientNetB0", "EfficientNetB1", "EfficientNetB2", "EfficientNetB3",
-    "MobileNetV2",
-    "DenseNet121",
-    "NASNetMobile"
-]
-
-SUSTAINABILITY_METRICS = {
-    "co2_baseline_grams": 0.0,
-    "co2_saved_grams": 0.0,
-    "energy_saved_kwh": 0.0,
-    "compute_saved_percent": 0.0,
-    "parameters_reduced_percent": 0.0,
+# Official TorchVision parameter counts (for reference reporting)
+OFFICIAL_PARAMS = {
+    "ResNet50":       {"total": 25_557_032, "size_mb": 97.8},
+    "EfficientNetB0": {"total":  5_288_548, "size_mb": 20.5},
+    "MobileNetV2":    {"total":  3_504_872, "size_mb": 13.6},
 }
 
-DEMO_HEADER = """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                                                                              ║
-║         HACKFORGE - AMAZON SUSTAINABILITY CHALLENGE (COMPREHENSIVE)         ║
-║                                                                              ║
-║       Transfer Learning for Greener AI: Classical ML to Deep CNNs           ║
-║                Medical Image Classification for Cancer Detection            ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-
-REAL-WORLD USE CASE: MEDICAL IMAGE CLASSIFICATION
-  [PROBLEM]       Breast cancer detection from histopathology images
-  [CHALLENGE]     Limited labeled medical data, expensive expert annotation
-  [SOLUTION]      Transfer learning from ImageNet to medical domain
-  [IMPACT]        10x less data needed, accessible to underserved hospitals
-
-CARBON EMISSION REDUCTION THROUGH TRANSFER LEARNING
-  [MINIMIZE WASTE]        85-99% CO2 reduction, 900x fewer parameters
-  [TRACK IMPACT]          Real-time carbon tracking via NVML GPU + CPU
-  [GREENER PRACTICES]     Safe transfer detection, parameter-efficient methods
-
-COMPREHENSIVE ARCHITECTURE COVERAGE
-  [CNNs]          13 architectures (VGG, ResNet, Inception, EfficientNet, etc.)
-  [TRANSFORMERS]  DistilBERT with LoRA for text classification
-  [CLASSICAL ML]  Bayesian, Regularized, Statistical Mapping
-
-SCALABILITY & REAL-WORLD IMPACT
-  [SCOPE]    442 samples (Diabetes) to 66M parameters (DistilBERT)
-  [METHOD]   From-scratch PyTorch + Keras for maximum compatibility
-  [IMPACT]   Lower compute = democratized AI access for all hospitals
-"""
+# Detect whether torchvision pretrained weights are available
+_HAS_TORCHVISION = False
+try:
+    from torchvision.models import resnet50  # noqa: F401
+    _HAS_TORCHVISION = True
+except ImportError:
+    pass
 
 
 # ============================================================================
-# DEVICE & GPU DETECTION
+# DEVICE & CARBON MEASUREMENT (FIX 1: MPS ≠ NVML)
 # ============================================================================
 
 def get_device():
-    """Detect best available device (CUDA > MPS > CPU)."""
     if torch.cuda.is_available():
         return torch.device("cuda")
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -209,9 +121,15 @@ def get_device():
     return torch.device("cpu")
 
 
-def detect_gpu_power():
-    """Detect GPU power consumption for carbon tracking."""
+def detect_hardware():
+    """
+    Detect hardware and select the correct carbon measurement method.
+
+    NVML is NVIDIA-only (CUDA). Apple MPS and CPU use time-based
+    estimation with a TDP power assumption. These are never mixed.
+    """
     if torch.cuda.is_available():
+        method = "nvml"
         try:
             import pynvml
             pynvml.nvmlInit()
@@ -220,26 +138,89 @@ def detect_gpu_power():
             name = pynvml.nvmlDeviceGetName(handle)
             if isinstance(name, bytes):
                 name = name.decode()
-            return power_mw / 1000.0, name
+            return power_mw / 1000.0, name, method
         except Exception:
             name = torch.cuda.get_device_name(0)
             tdp_map = {
                 "T4": 70, "L4": 72, "A10": 150, "V100": 300,
                 "A100": 400, "RTX 4090": 450, "RTX 3090": 350,
-                "RTX 3080": 320, "RTX 3070": 220, "RTX 3060": 170,
             }
             for key, watts in tdp_map.items():
                 if key in name:
-                    return float(watts), name
-            return 70.0, name
+                    return float(watts), name, "nvml_estimated"
+            return 70.0, name, "nvml_estimated"
+
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        # Apple Silicon realistic power: M1/M2 = 50W, M3 = 65W
-        return 65.0, "Apple MPS"
-    return 65.0, "CPU"
+        # Apple Silicon: M1~15W GPU, M2~15W, M3 Pro~22W, M3 Max~40W
+        # System-level TDP: M1=~20W, M2=~22W, M3 Pro=~30W, M3 Max=~40W
+        # We use a conservative whole-chip estimate.
+        return 30.0, "Apple Silicon (MPS)", "time_based"
+
+    return 65.0, "CPU", "time_based"
 
 
 DEVICE = get_device()
-GPU_POWER_WATTS, GPU_NAME = detect_gpu_power()
+HW_POWER_WATTS, HW_NAME, CARBON_METHOD = detect_hardware()
+
+
+def make_carbon_tracker(label):
+    """
+    Create the correct carbon tracker for the detected hardware.
+
+    CUDA → GPUCarbonTracker (uses NVML when available)
+    MPS/CPU → CarbonTracker (time-based estimation)
+    """
+    if DEVICE.type == "cuda":
+        return GPUCarbonTracker(label, power_watts=HW_POWER_WATTS)
+    else:
+        return CarbonTracker(label, power_watts=HW_POWER_WATTS)
+
+
+def carbon_method_description():
+    """Human-readable description of how CO2 is measured."""
+    if CARBON_METHOD == "nvml":
+        return "NVML Energy API (millijoule-accurate, NVIDIA GPU)"
+    elif CARBON_METHOD == "nvml_estimated":
+        return f"NVML estimated TDP ({HW_POWER_WATTS:.0f}W, NVIDIA GPU)"
+    else:
+        return (f"Time-based estimation ({HW_POWER_WATTS:.0f}W TDP × seconds"
+                f" × PUE × grid intensity)")
+
+
+
+# ============================================================================
+# DEMO HEADER (FIX 1 continued: no NVML claim on MPS)
+# ============================================================================
+
+def get_demo_header():
+    return f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║         HACKFORGE — AMAZON SUSTAINABILITY CHALLENGE (COMPREHENSIVE)          ║
+║       Transfer Learning for Greener AI: Classical ML to Deep CNNs            ║
+║       Synthetic Proof-of-Concept · Breast Cancer Histopathology Style        ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+  SYNTHETIC PROOF-OF-CONCEPT (not a clinical evaluation)
+    Dataset:     Synthetic images mimicking BreakHis histopathology structure
+    Purpose:     Demonstrate pipeline, carbon tracking, parameter accounting
+    For real:    Replace with BreakHis / PatchCamelyon + patient-aware splits
+
+  CARBON MEASUREMENT
+    Hardware:    {HW_NAME}
+    Method:      {carbon_method_description()}
+    Note:        {"NVML provides hardware-level energy measurement" if "nvml" in CARBON_METHOD else "Time-based estimation (not hardware-level measurement)"}
+
+  ARCHITECTURES (TorchVision official param counts)
+    ResNet50       25.6M params   97.8 MB   Gold standard, skip connections
+    EfficientNetB0  5.3M params   20.5 MB   Best accuracy/param, compound scaling
+    MobileNetV2     3.5M params   13.6 MB   Edge deployment, depthwise separable
+    Backend:     {"TorchVision pretrained (ImageNet weights)" if _HAS_TORCHVISION else "⚠ Lightweight fallback models (torchvision not installed)"}
+
+  EVALUATION
+    Priority:    Sensitivity (minimize missed cancers)
+    Metrics:     Sensitivity, Specificity, F1, ROC-AUC, Confusion Matrix
+    Carbon:      CO2 per experiment, parameter counts (total vs trainable)
+"""
 
 
 # ============================================================================
@@ -247,12 +228,10 @@ GPU_POWER_WATTS, GPU_NAME = detect_gpu_power()
 # ============================================================================
 
 def to_torch(X, y):
-    """Convert numpy arrays to PyTorch tensors."""
     return torch.from_numpy(X), torch.from_numpy(y)
 
 
 def take_fraction(X, y, frac, seed=0):
-    """Take a random fraction of dataset."""
     if frac >= 1.0:
         return X, y
     rng = np.random.RandomState(seed)
@@ -264,7 +243,6 @@ def take_fraction(X, y, frac, seed=0):
 
 
 def summarize(values):
-    """Calculate mean, std, and 95% confidence interval."""
     arr = np.asarray(values, dtype=np.float64)
     mean = float(arr.mean())
     std = float(arr.std(ddof=1)) if len(arr) > 1 else 0.0
@@ -273,17 +251,16 @@ def summarize(values):
 
 
 def fmt_stats(stats, pct=False):
-    """Format statistics for display."""
     mean, std, ci95 = stats
     scale = 100.0 if pct else 1.0
     suffix = "%" if pct else ""
-    return f"{mean * scale:.2f}{suffix} ± {std * scale:.2f}{suffix} (95% CI ± {ci95 * scale:.2f}{suffix})"
+    return (f"{mean * scale:.2f}{suffix} ± {std * scale:.2f}{suffix} "
+            f"(95% CI ± {ci95 * scale:.2f}{suffix})")
 
 
 def tracker_run(label, fn, use_gpu=False):
-    """Run function with carbon tracking."""
     if use_gpu:
-        tracker = GPUCarbonTracker(label, power_watts=GPU_POWER_WATTS)
+        tracker = make_carbon_tracker(label)
     else:
         tracker = CarbonTracker(label)
     tracker.start()
@@ -293,7 +270,6 @@ def tracker_run(label, fn, use_gpu=False):
 
 
 def print_section_header(title, subtitle=""):
-    """Print formatted section header."""
     print("\n" + "=" * 80)
     print(f"  {title}")
     if subtitle:
@@ -301,119 +277,80 @@ def print_section_header(title, subtitle=""):
     print("=" * 80)
 
 
-def print_metric_row(label, value, co2_kg=None, time_s=None):
-    """Print formatted metric row."""
-    row = f"  {label:<32} {value}"
-    if co2_kg is not None:
-        row += f"  | CO2: {co2_kg:.2e} kg"
-    if time_s is not None:
-        row += f"  | Time: {time_s:.2f}s"
-    print(row)
-
-
 def calculate_real_world_equivalents(co2_kg):
-    """Calculate real-world equivalents for CO2 emissions."""
-    co2_g = co2_kg * 1000  # Convert to grams
-
-    # Conversion factors
-    car_driving_km = co2_g / 411  # 411g CO2 per km (average car)
-    phone_charges = co2_g / 8  # 8g CO2 per smartphone charge
-    tree_months = co2_g / 6  # Tree absorbs ~6g CO2 per month
-    laptop_hours = co2_g / 50  # 50g CO2 per laptop hour
-    led_hours = co2_g / 10  # 10g CO2 per hour (10W LED)
-
+    co2_g = co2_kg * 1000
     return {
-        "car_km": car_driving_km,
-        "phone_charges": phone_charges,
-        "tree_months": tree_months,
-        "laptop_hours": laptop_hours,
-        "led_hours": led_hours,
-        "co2_grams": co2_g
+        "car_km": co2_g / 411, "phone_charges": co2_g / 8,
+        "tree_months": co2_g / 6, "laptop_hours": co2_g / 50,
+        "led_hours": co2_g / 10, "co2_grams": co2_g,
     }
 
 
 def count_parameters(model):
-    """Count total and trainable parameters."""
+    """Count total and trainable parameters separately."""
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return {"total": total, "trainable": trainable}
+    frozen = total - trainable
+    return {"total": total, "trainable": trainable, "frozen": frozen}
+
+
+def model_size_mb(total_params):
+    """Model artifact size in MB (float32)."""
+    return total_params * 4 / (1024 * 1024)
+
 
 
 # ============================================================================
-# CLASSICAL ML SCENARIOS (Keep from original)
+# CLASSICAL ML SCENARIOS (Preserved — already strong)
 # ============================================================================
 
 def run_ml_housing_scenario(seed, target_frac):
-    """
-    SCENARIO 1: Housing affordability under regional shift
-
-    Real-world application: Predicting housing prices across different regions.
-    Transfer learning reduces the need to retrain models from scratch for each region.
-
-    Sustainability impact: Closed-form Bayesian transfer = zero gradient steps!
-    """
     dataset_name = "california_housing"
-
     try:
-        (Xs_tr, ys_tr, _, _), (Xt_tr, yt_tr, Xt_te, yt_te) = load_california_housing_linear(seed=seed)
+        (Xs_tr, ys_tr, _, _), (Xt_tr, yt_tr, Xt_te, yt_te) = \
+            load_california_housing_linear(seed=seed)
         title = "Housing Affordability Prediction (CA North → CA South)"
-        fallback = False
     except Exception:
-        (Xs_tr, ys_tr, _, _), (Xt_tr, yt_tr, Xt_te, yt_te) = load_diabetes_linear(seed=seed)
+        (Xs_tr, ys_tr, _, _), (Xt_tr, yt_tr, Xt_te, yt_te) = \
+            load_diabetes_linear(seed=seed)
         title = "Disease Progression Prediction (Offline Fallback)"
         dataset_name = "diabetes"
-        fallback = True
 
     Xt_tr, yt_tr = take_fraction(Xt_tr, yt_tr, target_frac, seed=seed + 17)
-
-    # Check transfer safety
     decision = should_transfer(Xs_tr, Xt_tr)
-
     Xs_t, ys_t = to_torch(Xs_tr, ys_tr)
     Xt_t, yt_t = to_torch(Xt_tr, yt_tr)
     Xte_t, yte_t = to_torch(Xt_te, yt_te)
-
     d = Xs_t.shape[1]
     w0, b0 = torch.zeros(d), torch.zeros(1)
     batch_size = min(64, max(16, len(Xt_tr) // 4))
 
-    # SOURCE: Pretrain on source domain
     (w_src, b_src), source_carbon = tracker_run(
         f"{dataset_name}_source",
-        lambda: fit_linear_sgd(Xs_t, ys_t, w0, b0, epochs=30, lr=0.01, batch_size=min(64, len(Xs_tr))),
-    )
-
-    # BASELINE: Train from scratch on target
+        lambda: fit_linear_sgd(Xs_t, ys_t, w0, b0, epochs=30, lr=0.01,
+                               batch_size=min(64, len(Xs_tr))))
     (scratch_wb, scratch_carbon) = tracker_run(
         f"{dataset_name}_scratch",
-        lambda: fit_linear_sgd(Xt_t, yt_t, w0, b0, epochs=30, lr=0.01, batch_size=batch_size),
-    )
+        lambda: fit_linear_sgd(Xt_t, yt_t, w0, b0, epochs=30, lr=0.01,
+                               batch_size=batch_size))
     w_scratch, b_scratch = scratch_wb
     scratch_r2 = r2_score(Xte_t @ w_scratch + b_scratch, yte_t)
 
-    # TRANSFER 1: Regularized transfer
     (reg_wb, reg_carbon) = tracker_run(
         f"{dataset_name}_regularized",
-        lambda: regularized_transfer_linear(Xt_t, yt_t, w_src, b_src, lam=1.0),
-    )
+        lambda: regularized_transfer_linear(Xt_t, yt_t, w_src, b_src, lam=1.0))
     w_reg, b_reg = reg_wb
     reg_r2 = r2_score(Xte_t @ w_reg + b_reg, yte_t)
 
-    # TRANSFER 2: Bayesian transfer (closed-form, zero gradient steps!)
     (bayes_wb, bayes_carbon) = tracker_run(
         f"{dataset_name}_bayesian",
-        lambda: bayesian_transfer_linear(Xt_t, yt_t, w_src, b_src),
-    )
+        lambda: bayesian_transfer_linear(Xt_t, yt_t, w_src, b_src))
     w_bayes, b_bayes = bayes_wb
     bayes_r2 = r2_score(Xte_t @ w_bayes + b_bayes, yte_t)
 
     return {
-        "dataset_name": dataset_name,
-        "title": title,
-        "fallback": fallback,
-        "decision": decision,
-        "n_source": len(Xs_tr),
-        "n_target": len(Xt_tr),
+        "dataset_name": dataset_name, "title": title,
+        "decision": decision, "n_source": len(Xs_tr), "n_target": len(Xt_tr),
         "source_carbon": source_carbon,
         "scratch": {"score": float(scratch_r2), "carbon": scratch_carbon},
         "regularized": {"score": float(reg_r2), "carbon": reg_carbon},
@@ -422,36 +359,25 @@ def run_ml_housing_scenario(seed, target_frac):
 
 
 def run_ml_health_scenario(seed, target_frac):
-    """
-    SCENARIO 2: Health screening under tumor size shift
-
-    Real-world application: Breast cancer diagnosis model trained on small tumors,
-    adapted to large tumors with limited labels.
-
-    Sustainability impact: Reuse medical models across patient populations.
-    """
-    (Xs_tr, ys_tr, _, _), (Xt_tr, yt_tr, Xt_te, yt_te) = load_breast_cancer_logistic(seed=seed)
+    (Xs_tr, ys_tr, _, _), (Xt_tr, yt_tr, Xt_te, yt_te) = \
+        load_breast_cancer_logistic(seed=seed)
     Xt_tr, yt_tr = take_fraction(Xt_tr, yt_tr, target_frac, seed=seed + 23)
-
     decision = should_transfer(Xs_tr, Xt_tr)
-
     Xs_t, ys_t = to_torch(Xs_tr, ys_tr)
     Xt_t, yt_t = to_torch(Xt_tr, yt_tr)
     Xte_t, yte_t = to_torch(Xt_te, yt_te)
-
     d = Xs_t.shape[1]
     w0, b0 = torch.zeros(d), torch.zeros(1)
     batch_size = min(len(Xt_tr), max(16, len(Xt_tr) // 3))
 
     (w_src, b_src), source_carbon = tracker_run(
         "health_source",
-        lambda: fit_logistic_sgd(Xs_t, ys_t, w0, b0, epochs=80, lr=0.01, batch_size=min(32, len(Xs_tr))),
-    )
-
+        lambda: fit_logistic_sgd(Xs_t, ys_t, w0, b0, epochs=80, lr=0.01,
+                                 batch_size=min(32, len(Xs_tr))))
     (scratch_wb, scratch_carbon) = tracker_run(
         "health_scratch",
-        lambda: fit_logistic_sgd(Xt_t, yt_t, w0, b0, epochs=80, lr=0.01, batch_size=batch_size),
-    )
+        lambda: fit_logistic_sgd(Xt_t, yt_t, w0, b0, epochs=80, lr=0.01,
+                                 batch_size=batch_size))
     w_scratch, b_scratch = scratch_wb
     scratch_acc = accuracy_from_logits(Xte_t @ w_scratch + b_scratch, yte_t)
 
@@ -459,17 +385,13 @@ def run_ml_health_scenario(seed, target_frac):
         "health_bayesian",
         lambda: bayesian_transfer_logistic(
             Xt_t, yt_t, w_src, b_src, source_precision=1.0,
-            epochs=40, lr=0.01, batch_size=batch_size
-        ),
-    )
+            epochs=40, lr=0.01, batch_size=batch_size))
     w_bayes, b_bayes = bayes_wb
     bayes_acc = accuracy_from_logits(Xte_t @ w_bayes + b_bayes, yte_t)
 
     return {
         "title": "Health Screening (Small Tumors → Large Tumors)",
-        "decision": decision,
-        "n_source": len(Xs_tr),
-        "n_target": len(Xt_tr),
+        "decision": decision, "n_source": len(Xs_tr), "n_target": len(Xt_tr),
         "source_carbon": source_carbon,
         "scratch": {"score": float(scratch_acc), "carbon": scratch_carbon},
         "bayesian": {"score": float(bayes_acc), "carbon": bayes_carbon},
@@ -477,95 +399,102 @@ def run_ml_health_scenario(seed, target_frac):
 
 
 def run_ml_negative_transfer_scenario(seed):
-    """
-    SCENARIO 3: Negative transfer detection (safety guardrail)
-
-    Demonstrates that naive transfer can harm performance when source and target
-    are mismatched. The transfer gate detects this and recommends SKIP.
-
-    Sustainability impact: Prevents wasted compute on harmful transfer.
-    """
     rng = np.random.RandomState(seed)
     d = 8
     w_true = rng.randn(d).astype(np.float32)
-
-    # Source: positive relationship
     Xs = (rng.randn(400, d) + 1.0).astype(np.float32)
     ys = (Xs @ w_true + 0.1 * rng.randn(400)).astype(np.float32)
-
-    # Target: reversed relationship (negative transfer case)
     Xt = (rng.randn(120, d) - 1.0).astype(np.float32)
     yt = (-(Xt @ w_true) + 0.1 * rng.randn(120)).astype(np.float32)
-
     decision = should_transfer(Xs, Xt, verbose=False)
-
     Xs_t, ys_t = to_torch(Xs, ys)
     Xt_t, yt_t = to_torch(Xt, yt)
-    d = Xs_t.shape[1]
     w0, b0 = torch.zeros(d), torch.zeros(1)
-
     w_src, b_src = fit_linear_sgd(Xs_t, ys_t, w0, b0, epochs=20, lr=0.05, batch_size=64)
     w_scratch, b_scratch = fit_linear_sgd(Xt_t, yt_t, w0, b0, epochs=20, lr=0.05, batch_size=32)
-
-    # Naive transfer: initialize from source and fine-tune briefly
-    w_naive, b_naive = fit_linear_sgd(Xt_t, yt_t, w_src.clone(), b_src.clone(),
-                                       epochs=3, lr=0.05, batch_size=32)
-
-    # Safe transfer: regularized approach pulls back toward scratch when needed
+    w_naive, b_naive = fit_linear_sgd(Xt_t, yt_t, w_src.clone(), b_src.clone(), epochs=3, lr=0.05, batch_size=32)
     w_safe, b_safe = regularized_transfer_linear(Xt_t, yt_t, w_src, b_src, lam=0.05)
-
-    scratch_mse = mse(Xt_t @ w_scratch + b_scratch, yt_t)
-    naive_mse = mse(Xt_t @ w_naive + b_naive, yt_t)
-    safe_mse = mse(Xt_t @ w_safe + b_safe, yt_t)
-
     return {
-        "title": "Negative Transfer Safety Guardrail",
-        "decision": decision,
-        "scratch_mse": float(scratch_mse),
-        "naive_mse": float(naive_mse),
-        "safe_mse": float(safe_mse),
+        "title": "Negative Transfer Safety Guardrail", "decision": decision,
+        "scratch_mse": float(mse(Xt_t @ w_scratch + b_scratch, yt_t)),
+        "naive_mse": float(mse(Xt_t @ w_naive + b_naive, yt_t)),
+        "safe_mse": float(mse(Xt_t @ w_safe + b_safe, yt_t)),
     }
 
 
+
 # ============================================================================
-# MEDICAL IMAGE DATASET (Synthetic for Demo)
+# SYNTHETIC DATASET (FIX 3 & 4: harder task, domain shift that matters)
 # ============================================================================
 
-class SyntheticMedicalImageDataset(Dataset):
+class SyntheticHistopathologyDataset(Dataset):
     """
-    Synthetic medical histopathology image dataset.
+    Synthetic dataset that produces a genuinely HARD classification task.
 
-    In production, this would be replaced with real histopathology images:
-    - BreakHis: Breast Cancer Histopathological Database
-    - PCam: PatchCamelyon (metastatic cancer detection)
-    - ICIAR 2018 Grand Challenge dataset
+    The class signal is a tiny per-pixel channel-mean shift buried under
+    heavy Gaussian noise. There are NO spatial patterns (no sinusoids, no
+    textures) — just a statistical color difference.
 
-    Simulates:
-    - Source domain: General histopathology (varied staining, equipment)
-    - Target domain: Specific hospital protocol (limited labels)
+    IMPORTANT LIMITATION: On synthetic iid noise, a randomly-initialized
+    CNN can learn the channel-mean bias just as well as a pretrained one
+    given enough epochs, because the signal is a simple global statistic
+    (not a texture/shape feature). This means scratch may match or beat
+    frozen transfer on this synthetic task. On real histopathology images,
+    pretrained ImageNet features provide a large advantage because they
+    encode texture, edge, and color statistics that random filters lack.
+
+    This dataset is designed to:
+    - Produce non-trivial, imperfect accuracy (not 100%)
+    - Exercise the full training/evaluation/carbon pipeline
+    - Show parameter efficiency and CO2 differences between strategies
+    - Serve as a drop-in replacement target for real datasets
     """
 
-    def __init__(self, n_samples, img_size, num_classes, domain="source", seed=42):
+    def __init__(self, n_samples, img_size=224, domain="source", seed=42,
+                 malignant_ratio=0.69):
         self.n_samples = n_samples
-        self.img_size = img_size
-        self.num_classes = num_classes
-        self.domain = domain
-
         rng = np.random.RandomState(seed)
 
-        # Generate synthetic images with different domain characteristics
+        n_malignant = int(n_samples * malignant_ratio)
+        n_benign = n_samples - n_malignant
+        self.labels = np.concatenate([
+            np.zeros(n_benign, dtype=np.int64),
+            np.ones(n_malignant, dtype=np.int64),
+        ])
+
+        self.images = np.zeros((n_samples, 3, img_size, img_size), dtype=np.float32)
+
+        # The ONLY class signal: a tiny per-pixel channel-mean shift.
+        # Everything else is iid Gaussian noise. No spatial structure.
         if domain == "source":
-            # Source: more varied, brighter (different staining protocols)
-            self.images = rng.randn(n_samples, 3, img_size, img_size).astype(np.float32) * 0.5 + 0.5
+            noise_std = 0.45
+            # Benign: R+0.015, G+0.000, B-0.010
+            # Malignant: R-0.010, G-0.015, B+0.015
+            benign_bias  = np.array([ 0.015,  0.000, -0.010], dtype=np.float32)
+            malign_bias  = np.array([-0.010, -0.015,  0.015], dtype=np.float32)
         else:
-            # Target: darker, more constrained (single hospital protocol)
-            self.images = rng.randn(n_samples, 3, img_size, img_size).astype(np.float32) * 0.3 + 0.3
+            # Target domain: MORE noise, DIFFERENT color direction
+            noise_std = 0.50
+            benign_bias  = np.array([ 0.010,  0.005, -0.005], dtype=np.float32)
+            malign_bias  = np.array([-0.005, -0.010,  0.010], dtype=np.float32)
 
-        # Normalize to [0, 1]
-        self.images = np.clip(self.images, 0, 1)
+        for i in range(n_samples):
+            bias = benign_bias if self.labels[i] == 0 else malign_bias
+            # Per-sample random baseline shift (simulates staining variation)
+            sample_shift = rng.uniform(-0.03, 0.03, size=3).astype(np.float32)
+            for c in range(3):
+                pixel_noise = rng.randn(img_size, img_size).astype(np.float32) * noise_std
+                self.images[i, c] = np.clip(
+                    0.5 + bias[c] + sample_shift[c] + pixel_noise, 0.0, 1.0
+                )
 
-        # Generate labels (benign vs malignant)
-        self.labels = rng.randint(0, num_classes, n_samples).astype(np.int64)
+        # ImageNet normalization
+        for c in range(3):
+            self.images[:, c] = (self.images[:, c] - IMAGENET_MEAN[c]) / IMAGENET_STD[c]
+
+        perm = rng.permutation(n_samples)
+        self.images = self.images[perm]
+        self.labels = self.labels[perm]
 
     def __len__(self):
         return self.n_samples
@@ -573,442 +502,224 @@ class SyntheticMedicalImageDataset(Dataset):
     def __getitem__(self, idx):
         return torch.from_numpy(self.images[idx]), torch.tensor(self.labels[idx])
 
+    def get_class_weights(self):
+        counts = np.bincount(self.labels, minlength=NUM_MEDICAL_CLASSES)
+        weights = 1.0 / (counts.astype(np.float32) + 1e-6)
+        weights = weights / weights.sum() * NUM_MEDICAL_CLASSES
+        return torch.from_numpy(weights).float()
+
 
 def create_medical_dataloaders(n_source, n_target_train, n_target_test,
-                               img_size, num_classes, batch_size, seed=42):
-    """Create synthetic medical image dataloaders with domain shift."""
+                               img_size, batch_size, seed=42, target_frac=1.0):
+    source_ds = SyntheticHistopathologyDataset(n_source, img_size, "source", seed)
+    target_train_full = SyntheticHistopathologyDataset(n_target_train, img_size, "target", seed + 100)
+    target_test_ds = SyntheticHistopathologyDataset(n_target_test, img_size, "target", seed + 200)
 
-    source_ds = SyntheticMedicalImageDataset(
-        n_source, img_size, num_classes, domain="source", seed=seed
-    )
-    target_train_ds = SyntheticMedicalImageDataset(
-        n_target_train, img_size, num_classes, domain="target", seed=seed + 100
-    )
-    target_test_ds = SyntheticMedicalImageDataset(
-        n_target_test, img_size, num_classes, domain="target", seed=seed + 200
-    )
+    if target_frac < 1.0:
+        rng = np.random.RandomState(seed + 300)
+        n_keep = max(16, int(len(target_train_full) * target_frac))
+        indices = rng.choice(len(target_train_full), size=n_keep, replace=False)
+        target_train_ds = Subset(target_train_full, indices.tolist())
+        actual_n_target = n_keep
+    else:
+        target_train_ds = target_train_full
+        actual_n_target = n_target_train
 
-    source_loader = DataLoader(source_ds, batch_size=batch_size, shuffle=True)
-    target_train_loader = DataLoader(target_train_ds, batch_size=batch_size, shuffle=True)
+    class_weights = target_train_full.get_class_weights()
+    source_loader = DataLoader(source_ds, batch_size=batch_size, shuffle=True, drop_last=True)
+    target_train_loader = DataLoader(target_train_ds, batch_size=batch_size, shuffle=True, drop_last=False)
     target_test_loader = DataLoader(target_test_ds, batch_size=batch_size, shuffle=False)
 
     return {
-        "source_train": source_loader,
-        "target_train": target_train_loader,
-        "target_test": target_test_loader,
-        "n_source": n_source,
-        "n_target_train": n_target_train,
-        "n_target_test": n_target_test,
+        "source_train": source_loader, "target_train": target_train_loader,
+        "target_test": target_test_loader, "n_source": n_source,
+        "n_target_train": actual_n_target, "n_target_test": n_target_test,
+        "class_weights": class_weights, "target_frac": target_frac,
     }
 
 
+
 # ============================================================================
-# CNN ARCHITECTURE BUILDERS
+# CNN BUILDERS (FIX 2: correct param counts, separate total/trainable/frozen)
 # ============================================================================
 
-class CNNClassifier(nn.Module):
-    """
-    Generic CNN classifier with custom head.
-
-    Supports:
-    - Feature extraction (frozen backbone)
-    - Full fine-tuning
-    - Partial unfreezing (progressive)
-    - Custom classification head with regularization
-    """
-
-    def __init__(self, backbone, num_classes, dropout=0.5, hidden_dim=512):
+class MedicalCNNClassifier(nn.Module):
+    def __init__(self, backbone, backbone_out_dim, num_classes=2, dropout=0.5, hidden_dim=256):
         super().__init__()
         self.backbone = backbone
-        self.num_classes = num_classes
-
-        # Get backbone output dimension by checking with dummy input
-        with torch.no_grad():
-            dummy_input = torch.randn(1, 3, IMG_SIZE, IMG_SIZE)
-            backbone_out = self.backbone(dummy_input)
-            if isinstance(backbone_out, tuple):
-                backbone_out = backbone_out[0]
-
-            # If output is 4D (batch, channels, height, width), pool and flatten
-            if len(backbone_out.shape) == 4:
-                pooled = F.adaptive_avg_pool2d(backbone_out, (1, 1))
-                self.backbone_dim = pooled.view(pooled.size(0), -1).shape[1]
-            else:
-                # Already flattened or 2D
-                self.backbone_dim = backbone_out.view(backbone_out.size(0), -1).shape[1]
-
-        # Custom classification head with regularization
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(self.backbone_dim, hidden_dim),
+            nn.Linear(backbone_out_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout / 2),
-            nn.Linear(hidden_dim, num_classes)
+            nn.Dropout(dropout * 0.5),
+            nn.Linear(hidden_dim, num_classes),
         )
 
     def forward(self, x):
         features = self.backbone(x)
         if isinstance(features, tuple):
             features = features[0]
-
-        # Apply global average pooling if features are 4D
-        if len(features.shape) == 4:
-            features = F.adaptive_avg_pool2d(features, (1, 1))
-
-        # Flatten
+        features = self.pool(features)
         features = features.view(features.size(0), -1)
-
-        # Apply classifier head
         return self.classifier(features)
 
     def freeze_backbone(self):
-        """Freeze all backbone parameters."""
         for param in self.backbone.parameters():
             param.requires_grad = False
 
     def unfreeze_backbone(self):
-        """Unfreeze all backbone parameters."""
         for param in self.backbone.parameters():
             param.requires_grad = True
 
-    def unfreeze_top_layers(self, n_layers=2):
-        """Unfreeze top N layers of backbone."""
-        # Get all modules in backbone
+    def unfreeze_top_layers(self, n_layers=3):
         modules = list(self.backbone.modules())
-        # Unfreeze last N modules
         for module in modules[-n_layers:]:
             for param in module.parameters():
                 param.requires_grad = True
 
 
-def build_vgg_backbone(variant="VGG16"):
-    """
-    Build VGG backbone.
-
-    VGG (Visual Geometry Group):
-    - Simple architecture: repeated conv-relu-pool blocks
-    - VGG16: 13 conv layers, 3 FC layers (138M params)
-    - VGG19: 16 conv layers, 3 FC layers (143M params)
-    - Good for: baseline comparisons, interpretability
-    - Drawback: large model size, slower training
-    """
-    try:
-        from torchvision.models import vgg16, vgg19, VGG16_Weights, VGG19_Weights
-
-        if variant == "VGG16":
-            model = vgg16(weights=VGG16_Weights.IMAGENET1K_V1)
-        else:  # VGG19
-            model = vgg19(weights=VGG19_Weights.IMAGENET1K_V1)
-
-        # Remove classifier, keep only features
-        return model.features
-    except ImportError:
-        # Fallback: simple VGG-style model
-        return nn.Sequential(
-            # Block 1
-            nn.Conv2d(3, 64, 3, padding=1), nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, 3, padding=1), nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
-            # Block 2
-            nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, 3, padding=1), nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
-            # Block 3
-            nn.Conv2d(128, 256, 3, padding=1), nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, 3, padding=1), nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
-        )
+def _build_fallback_resnet():
+    class ResBlock(nn.Module):
+        def __init__(self, in_ch, out_ch, stride=1):
+            super().__init__()
+            self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride, 1, bias=False)
+            self.bn1 = nn.BatchNorm2d(out_ch)
+            self.conv2 = nn.Conv2d(out_ch, out_ch, 3, 1, 1, bias=False)
+            self.bn2 = nn.BatchNorm2d(out_ch)
+            self.shortcut = nn.Sequential()
+            if stride != 1 or in_ch != out_ch:
+                self.shortcut = nn.Sequential(
+                    nn.Conv2d(in_ch, out_ch, 1, stride, bias=False),
+                    nn.BatchNorm2d(out_ch))
+        def forward(self, x):
+            out = F.relu(self.bn1(self.conv1(x)))
+            out = self.bn2(self.conv2(out))
+            return F.relu(out + self.shortcut(x))
+    backbone = nn.Sequential(
+        nn.Conv2d(3, 64, 7, 2, 3, bias=False), nn.BatchNorm2d(64),
+        nn.ReLU(inplace=True), nn.MaxPool2d(3, 2, 1),
+        ResBlock(64, 64), ResBlock(64, 128, 2),
+        ResBlock(128, 256, 2), ResBlock(256, 512, 2))
+    return backbone, 512
 
 
-def build_resnet_backbone(variant="ResNet50"):
-    """
-    Build ResNet backbone.
-
-    ResNet (Residual Networks):
-    - Key innovation: skip connections (identity shortcuts)
-    - Enables training of very deep networks (50-152 layers)
-    - ResNet50: 50 layers (25.6M params)
-    - ResNet101: 101 layers (44.5M params)
-    - Good for: state-of-the-art accuracy, stable training
-    - Benefit: skip connections prevent vanishing gradients
-    """
-    try:
-        from torchvision.models import resnet50, resnet101, ResNet50_Weights, ResNet101_Weights
-
-        if variant == "ResNet50":
-            model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-        else:  # ResNet101
-            model = resnet101(weights=ResNet101_Weights.IMAGENET1K_V1)
-
-        # Remove final FC layer, keep feature extractor
-        return nn.Sequential(*list(model.children())[:-2])
-    except ImportError:
-        # Fallback: simple ResNet-style blocks
-        class ResBlock(nn.Module):
-            def __init__(self, in_ch, out_ch, stride=1):
-                super().__init__()
-                self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride, 1, bias=False)
-                self.bn1 = nn.BatchNorm2d(out_ch)
-                self.conv2 = nn.Conv2d(out_ch, out_ch, 3, 1, 1, bias=False)
-                self.bn2 = nn.BatchNorm2d(out_ch)
-                self.shortcut = nn.Sequential()
-                if stride != 1 or in_ch != out_ch:
-                    self.shortcut = nn.Sequential(
-                        nn.Conv2d(in_ch, out_ch, 1, stride, bias=False),
-                        nn.BatchNorm2d(out_ch)
-                    )
-
-            def forward(self, x):
-                out = F.relu(self.bn1(self.conv1(x)))
-                out = self.bn2(self.conv2(out))
-                out += self.shortcut(x)
-                out = F.relu(out)
-                return out
-
-        return nn.Sequential(
-            nn.Conv2d(3, 64, 7, 2, 3, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(3, 2, 1),
-            ResBlock(64, 128, 2),
-            ResBlock(128, 256, 2),
-        )
+def _build_fallback_mobile():
+    backbone = nn.Sequential(
+        nn.Conv2d(3, 32, 3, 2, 1, bias=False), nn.BatchNorm2d(32), nn.ReLU6(inplace=True),
+        nn.Conv2d(32, 32, 3, 1, 1, groups=32, bias=False), nn.BatchNorm2d(32), nn.ReLU6(inplace=True),
+        nn.Conv2d(32, 64, 1, bias=False), nn.BatchNorm2d(64),
+        nn.Conv2d(64, 64, 3, 2, 1, groups=64, bias=False), nn.BatchNorm2d(64), nn.ReLU6(inplace=True),
+        nn.Conv2d(64, 128, 1, bias=False), nn.BatchNorm2d(128),
+        nn.Conv2d(128, 128, 3, 2, 1, groups=128, bias=False), nn.BatchNorm2d(128), nn.ReLU6(inplace=True),
+        nn.Conv2d(128, 256, 1, bias=False), nn.BatchNorm2d(256), nn.ReLU6(inplace=True))
+    return backbone, 256
 
 
-def build_inception_backbone():
-    """
-    Build InceptionV3 backbone.
-
-    InceptionV3:
-    - Multi-scale feature extraction (1x1, 3x3, 5x5 convs in parallel)
-    - Factorized convolutions (3x3 → two 3x1 and 1x3)
-    - Auxiliary classifiers during training
-    - 23.8M parameters
-    - Good for: multi-scale features, efficient computation
-    - Used in: Google, medical imaging
-    """
-    try:
-        from torchvision.models import inception_v3, Inception_V3_Weights
-
-        # Load inception - we'll extract features before final layers
-        model = inception_v3(weights=Inception_V3_Weights.IMAGENET1K_V1)
-
-        # Remove classifier layers, keep only feature extraction
-        # InceptionV3 structure: Conv2d_1a through Mixed_7c, then avgpool + dropout + fc
-        # We want everything up to (and including) Mixed_7c
-        backbone = nn.Sequential(*list(model.children())[:-3])  # Remove avgpool, dropout, fc
-
-        return backbone
-    except ImportError:
-        # Fallback: simple Inception-style module
-        class InceptionModule(nn.Module):
-            def __init__(self, in_ch, out_ch):
-                super().__init__()
-                self.branch1 = nn.Conv2d(in_ch, out_ch//4, 1)
-                self.branch2 = nn.Sequential(
-                    nn.Conv2d(in_ch, out_ch//4, 1),
-                    nn.Conv2d(out_ch//4, out_ch//4, 3, padding=1)
-                )
-                self.branch3 = nn.Sequential(
-                    nn.Conv2d(in_ch, out_ch//4, 1),
-                    nn.Conv2d(out_ch//4, out_ch//4, 5, padding=2)
-                )
-                self.branch4 = nn.Sequential(
-                    nn.MaxPool2d(3, stride=1, padding=1),
-                    nn.Conv2d(in_ch, out_ch//4, 1)
-                )
-
-            def forward(self, x):
-                return torch.cat([
-                    self.branch1(x),
-                    self.branch2(x),
-                    self.branch3(x),
-                    self.branch4(x)
-                ], dim=1)
-
-        return nn.Sequential(
-            nn.Conv2d(3, 64, 7, 2, 3),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(3, 2, 1),
-            InceptionModule(64, 128),
-            nn.MaxPool2d(3, 2, 1),
-        )
-
-
-def build_efficientnet_backbone(variant="B0"):
-    """
-    Build EfficientNet backbone.
-
-    EfficientNet:
-    - Compound scaling: scales depth, width, resolution together
-    - Mobile inverted bottleneck (MBConv) blocks
-    - Squeeze-and-excitation layers
-    - B0: 5.3M params, B7: 66M params
-    - Good for: efficiency, mobile deployment, state-of-the-art accuracy
-    - SOTA on ImageNet with fewer parameters
-    """
-    try:
-        from torchvision.models import (
-            efficientnet_b0, efficientnet_b1, efficientnet_b2, efficientnet_b3,
-            efficientnet_b4, efficientnet_b5, efficientnet_b6, efficientnet_b7,
-            EfficientNet_B0_Weights, EfficientNet_B1_Weights, EfficientNet_B2_Weights,
-            EfficientNet_B3_Weights, EfficientNet_B4_Weights, EfficientNet_B5_Weights,
-            EfficientNet_B6_Weights, EfficientNet_B7_Weights
-        )
-
-        models_map = {
-            "B0": (efficientnet_b0, EfficientNet_B0_Weights.IMAGENET1K_V1),
-            "B1": (efficientnet_b1, EfficientNet_B1_Weights.IMAGENET1K_V1),
-            "B2": (efficientnet_b2, EfficientNet_B2_Weights.IMAGENET1K_V1),
-            "B3": (efficientnet_b3, EfficientNet_B3_Weights.IMAGENET1K_V1),
-            "B4": (efficientnet_b4, EfficientNet_B4_Weights.IMAGENET1K_V1),
-            "B5": (efficientnet_b5, EfficientNet_B5_Weights.IMAGENET1K_V1),
-            "B6": (efficientnet_b6, EfficientNet_B6_Weights.IMAGENET1K_V1),
-            "B7": (efficientnet_b7, EfficientNet_B7_Weights.IMAGENET1K_V1),
-        }
-
-        model_fn, weights = models_map.get(variant, (efficientnet_b0, EfficientNet_B0_Weights.IMAGENET1K_V1))
-        model = model_fn(weights=weights)
-
-        # Remove classifier
-        return model.features
-    except ImportError:
-        # Fallback: simple MobileNet-style model
-        return nn.Sequential(
-            nn.Conv2d(3, 32, 3, 2, 1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ReLU6(inplace=True),
-            nn.Conv2d(32, 64, 3, 2, 1, groups=32, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU6(inplace=True),
-        )
-
-
-def build_mobilenet_backbone():
-    """
-    Build MobileNetV2 backbone.
-
-    MobileNetV2:
-    - Depthwise separable convolutions (reduced parameters)
-    - Linear bottlenecks, inverted residuals
-    - 3.5M parameters
-    - Good for: mobile devices, edge deployment, real-time inference
-    - Used in: mobile apps, embedded systems, low-power devices
-    """
-    try:
-        from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
-
-        model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
-        return model.features
-    except ImportError:
-        # Fallback
-        return build_efficientnet_backbone("B0")
-
-
-def build_densenet_backbone():
-    """
-    Build DenseNet121 backbone.
-
-    DenseNet (Densely Connected Networks):
-    - Each layer connected to all subsequent layers
-    - Feature reuse, reduces parameters
-    - DenseNet121: 8M parameters
-    - Good for: feature reuse, parameter efficiency
-    - Better gradient flow than ResNet
-    """
-    try:
-        from torchvision.models import densenet121, DenseNet121_Weights
-
-        model = densenet121(weights=DenseNet121_Weights.IMAGENET1K_V1)
-        return model.features
-    except ImportError:
-        # Fallback
-        return build_resnet_backbone("ResNet50")
-
-
-def build_xception_backbone():
-    """
-    Build Xception backbone.
-
-    Xception (Extreme Inception):
-    - Depthwise separable convolutions throughout
-    - Modified Inception modules
-    - 22.9M parameters
-    - Good for: efficient feature extraction
-    - Inspired by: Inception architecture
-    """
-    # PyTorch doesn't have official Xception, use fallback
-    return build_inception_backbone()
-
-
-def build_nasnet_backbone():
-    """
-    Build NASNetMobile backbone.
-
-    NASNet (Neural Architecture Search):
-    - Architecture discovered by AutoML
-    - Cell-based design (normal cells + reduction cells)
-    - NASNetMobile: 5.3M parameters
-    - Good for: AutoML-discovered efficiency
-    - Competitive accuracy with fewer parameters
-    """
-    # PyTorch doesn't have official NASNet, use EfficientNet as similar approach
-    return build_efficientnet_backbone("B0")
-
-
-def build_cnn_model(architecture, num_classes, img_size):
-    """
-    Build CNN model for given architecture.
-
-    Args:
-        architecture: Model name (VGG16, ResNet50, etc.)
-        num_classes: Number of output classes
-        img_size: Input image size
-
-    Returns:
-        CNNClassifier instance with appropriate backbone
-    """
-
-    # Build backbone based on architecture
-    if architecture == "VGG16":
-        backbone = build_vgg_backbone("VGG16")
-    elif architecture == "VGG19":
-        backbone = build_vgg_backbone("VGG19")
-    elif architecture == "ResNet50":
-        backbone = build_resnet_backbone("ResNet50")
-    elif architecture == "ResNet101":
-        backbone = build_resnet_backbone("ResNet101")
-    elif architecture == "InceptionV3":
-        backbone = build_inception_backbone()
-    elif architecture == "Xception":
-        backbone = build_xception_backbone()
-    elif architecture.startswith("EfficientNet"):
-        variant = architecture.replace("EfficientNet", "")  # B0, B1, etc.
-        backbone = build_efficientnet_backbone(variant)
+def build_cnn_model(architecture, num_classes=NUM_MEDICAL_CLASSES):
+    if architecture == "ResNet50":
+        try:
+            from torchvision.models import resnet50, ResNet50_Weights
+            base = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+            backbone = nn.Sequential(*list(base.children())[:-2])
+            out_dim = 2048
+        except ImportError:
+            backbone, out_dim = _build_fallback_resnet()
+    elif architecture == "EfficientNetB0":
+        try:
+            from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
+            base = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
+            backbone = base.features
+            out_dim = 1280
+        except ImportError:
+            backbone, out_dim = _build_fallback_mobile()
     elif architecture == "MobileNetV2":
-        backbone = build_mobilenet_backbone()
-    elif architecture == "DenseNet121":
-        backbone = build_densenet_backbone()
-    elif architecture == "NASNetMobile":
-        backbone = build_nasnet_backbone()
+        try:
+            from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
+            base = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
+            backbone = base.features
+            out_dim = 1280
+        except ImportError:
+            backbone, out_dim = _build_fallback_mobile()
     else:
         raise ValueError(f"Unknown architecture: {architecture}")
+    return MedicalCNNClassifier(backbone, out_dim, num_classes, dropout=0.5, hidden_dim=256)
 
-    # Wrap in classifier
-    model = CNNClassifier(backbone, num_classes, dropout=0.5, hidden_dim=512)
-
-    return model
 
 
 # ============================================================================
-# TRAINING & EVALUATION UTILITIES
+# CLINICAL METRICS
+# ============================================================================
+
+def compute_clinical_metrics(model, test_loader, device):
+    model.eval()
+    all_preds, all_labels, all_probs = [], [], []
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            probs = F.softmax(outputs, dim=1)
+            _, predicted = outputs.max(1)
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(targets.cpu().numpy())
+            all_probs.extend(probs[:, 1].cpu().numpy())
+
+    all_preds = np.array(all_preds)
+    all_labels = np.array(all_labels)
+    all_probs = np.array(all_probs)
+
+    tp = int(((all_preds == 1) & (all_labels == 1)).sum())
+    tn = int(((all_preds == 0) & (all_labels == 0)).sum())
+    fp = int(((all_preds == 1) & (all_labels == 0)).sum())
+    fn = int(((all_preds == 0) & (all_labels == 1)).sum())
+
+    accuracy = (tp + tn) / max(tp + tn + fp + fn, 1)
+    sensitivity = tp / max(tp + fn, 1)
+    specificity = tn / max(tn + fp, 1)
+    precision = tp / max(tp + fp, 1)
+    f1 = 2 * precision * sensitivity / max(precision + sensitivity, 1e-8)
+
+    # ROC-AUC via Wilcoxon-Mann-Whitney
+    pos_probs = all_probs[all_labels == 1]
+    neg_probs = all_probs[all_labels == 0]
+    if len(pos_probs) > 0 and len(neg_probs) > 0:
+        auc = 0.0
+        for p in pos_probs:
+            auc += (neg_probs < p).sum() + 0.5 * (neg_probs == p).sum()
+        roc_auc = float(auc / (len(pos_probs) * len(neg_probs)))
+    else:
+        roc_auc = 0.5
+
+    return {
+        "accuracy": accuracy, "sensitivity": sensitivity,
+        "specificity": specificity, "precision": precision,
+        "f1": f1, "roc_auc": roc_auc,
+        "confusion_matrix": {"tp": tp, "tn": tn, "fp": fp, "fn": fn},
+        "n_samples": len(all_labels),
+    }
+
+
+def print_clinical_metrics(metrics, label=""):
+    cm = metrics["confusion_matrix"]
+    print(f"\n    {label} Clinical Metrics:")
+    print(f"      Accuracy:     {metrics['accuracy']:.1%}")
+    print(f"      Sensitivity:  {metrics['sensitivity']:.1%}  "
+          f"← PRIORITY (missed cancers = {cm['fn']})")
+    print(f"      Specificity:  {metrics['specificity']:.1%}")
+    print(f"      Precision:    {metrics['precision']:.1%}")
+    print(f"      F1 Score:     {metrics['f1']:.1%}")
+    print(f"      ROC-AUC:      {metrics['roc_auc']:.3f}")
+    print(f"      Confusion:    TP={cm['tp']}  FP={cm['fp']}  FN={cm['fn']}  TN={cm['tn']}")
+
+
+
+# ============================================================================
+# TRAINING PIPELINE
 # ============================================================================
 
 class EarlyStopping:
-    """Early stopping callback to prevent overfitting."""
-
-    def __init__(self, patience=5, min_delta=0.001, mode='max'):
+    def __init__(self, patience=7, min_delta=0.001, mode='max'):
         self.patience = patience
         self.min_delta = min_delta
         self.mode = mode
@@ -1030,7 +741,7 @@ class EarlyStopping:
                 self.counter += 1
                 if self.counter >= self.patience:
                     self.early_stop = True
-        else:  # mode == 'min'
+        else:
             if score < self.best_score - self.min_delta:
                 self.best_score = score
                 self.counter = 0
@@ -1041,707 +752,483 @@ class EarlyStopping:
                     self.early_stop = True
 
 
-class ModelCheckpoint:
-    """Model checkpoint callback."""
-
-    def __init__(self, filepath, monitor='val_acc', mode='max'):
-        self.filepath = filepath
-        self.monitor = monitor
-        self.mode = mode
-        self.best_score = None
-
-    def __call__(self, score, model):
-        if self.best_score is None or \
-           (self.mode == 'max' and score > self.best_score) or \
-           (self.mode == 'min' and score < self.best_score):
-            self.best_score = score
-            torch.save(model.state_dict(), self.filepath)
-
-
-def train_cnn_with_callbacks(
-    model, train_loader, val_loader, criterion, optimizer,
-    epochs, device, scheduler=None, early_stopping=None,
-    tracker=None, verbose=True, label=""
-):
-    """
-    Train CNN model with full callback support.
-
-    Features:
-    - Training/validation loop with epoch tracking
-    - Learning rate scheduling (ReduceLROnPlateau, CosineAnnealing, etc.)
-    - Early stopping to prevent overfitting
-    - Model checkpointing (save best model)
-    - Carbon tracking
-    - Loss/accuracy visualization data collection
-    """
-
-    if tracker is not None:
-        tracker.start()
-
+def train_medical_cnn(model, train_loader, val_loader, criterion, optimizer,
+                      epochs, device, scheduler=None, early_stopping=None,
+                      label="", verbose=True):
     start_time = time.time()
-
-    # Training history
-    history = {
-        "train_loss": [],
-        "train_acc": [],
-        "val_loss": [],
-        "val_acc": [],
-        "lr": [],
-    }
-
     best_val_acc = 0.0
     best_state = None
 
     for epoch in range(epochs):
-        # ========== Training Phase ==========
         model.train()
-        train_loss = 0.0
-        train_correct = 0
-        train_total = 0
-
-        for batch_idx, (inputs, targets) in enumerate(train_loader):
+        train_loss, train_correct, train_total = 0.0, 0, 0
+        for inputs, targets in train_loader:
             inputs, targets = inputs.to(device), targets.to(device)
-
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-
             train_loss += loss.item()
             _, predicted = outputs.max(1)
             train_total += targets.size(0)
             train_correct += predicted.eq(targets).sum().item()
 
-        epoch_train_loss = train_loss / len(train_loader)
-        epoch_train_acc = train_correct / train_total
-
-        # ========== Validation Phase ==========
         model.eval()
-        val_loss = 0.0
-        val_correct = 0
-        val_total = 0
-
+        val_correct, val_total = 0, 0
+        val_loss_sum = 0.0
         with torch.no_grad():
             for inputs, targets in val_loader:
                 inputs, targets = inputs.to(device), targets.to(device)
                 outputs = model(inputs)
-                loss = criterion(outputs, targets)
-
-                val_loss += loss.item()
+                val_loss_sum += criterion(outputs, targets).item()
                 _, predicted = outputs.max(1)
                 val_total += targets.size(0)
                 val_correct += predicted.eq(targets).sum().item()
 
-        epoch_val_loss = val_loss / len(val_loader)
-        epoch_val_acc = val_correct / val_total
+        epoch_val_acc = val_correct / max(val_total, 1)
+        epoch_val_loss = val_loss_sum / max(len(val_loader), 1)
 
-        # Save history
-        history["train_loss"].append(epoch_train_loss)
-        history["train_acc"].append(epoch_train_acc)
-        history["val_loss"].append(epoch_val_loss)
-        history["val_acc"].append(epoch_val_acc)
-        history["lr"].append(optimizer.param_groups[0]['lr'])
-
-        # Save best model
         if epoch_val_acc > best_val_acc:
             best_val_acc = epoch_val_acc
             best_state = copy.deepcopy(model.state_dict())
 
-        # Learning rate scheduling
         if scheduler is not None:
             if isinstance(scheduler, ReduceLROnPlateau):
                 scheduler.step(epoch_val_loss)
             else:
                 scheduler.step()
 
-        # Early stopping
         if early_stopping is not None:
             early_stopping(epoch_val_acc, model)
             if early_stopping.early_stop:
                 if verbose:
-                    print(f"    [{label}] Early stopping at epoch {epoch+1}/{epochs}")
+                    print(f"      [{label}] Early stop at epoch {epoch+1}")
                 break
 
-        # Verbose logging
-        if verbose and (epoch == 0 or epoch == epochs-1 or (epoch+1) % max(1, epochs//5) == 0):
-            print(f"    [{label}] epoch {epoch+1}/{epochs}  "
-                  f"train_loss={epoch_train_loss:.4f}  train_acc={epoch_train_acc:.1%}  "
-                  f"val_loss={epoch_val_loss:.4f}  val_acc={epoch_val_acc:.1%}  "
-                  f"lr={optimizer.param_groups[0]['lr']:.6f}")
+        if verbose and (epoch == 0 or epoch == epochs - 1 or (epoch + 1) % max(1, epochs // 4) == 0):
+            print(f"      [{label}] epoch {epoch+1}/{epochs}  "
+                  f"val_acc={epoch_val_acc:.1%}  lr={optimizer.param_groups[0]['lr']:.2e}")
 
-    # Restore best model
     if best_state is not None:
         model.load_state_dict(best_state)
+    return {"best_val_acc": best_val_acc, "time_s": time.time() - start_time}
 
-    elapsed = time.time() - start_time
-    carbon = tracker.stop() if tracker is not None else None
-
-    return {
-        "best_val_acc": best_val_acc,
-        "time_s": elapsed,
-        "carbon": carbon,
-        "history": history,
-    }
-
-
-def evaluate_cnn(model, test_loader, criterion, device):
-    """Evaluate CNN model on test set."""
-    model.eval()
-    test_loss = 0.0
-    test_correct = 0
-    test_total = 0
-
-    with torch.no_grad():
-        for inputs, targets in test_loader:
-            inputs, targets = inputs.to(device), targets.to(device)
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-
-            test_loss += loss.item()
-            _, predicted = outputs.max(1)
-            test_total += targets.size(0)
-            test_correct += predicted.eq(targets).sum().item()
-
-    return {
-        "loss": test_loss / len(test_loader),
-        "accuracy": test_correct / test_total,
-    }
 
 
 # ============================================================================
-# DEEP LEARNING SCENARIO - COMPREHENSIVE CNN COMPARISON
+# DL SCENARIO: SINGLE ARCHITECTURE (FIX 2: report total/trainable/frozen)
 # ============================================================================
 
-def run_dl_medical_imaging_scenario(args, architecture, data, seed, verbose=True):
-    """
-    Run single CNN architecture on medical imaging task.
-
-    Training strategies:
-    1. Scratch: Train from random initialization
-    2. Transfer (Frozen): Freeze backbone, train head only
-    3. Transfer (Fine-tune): Full fine-tuning
-    4. Transfer (Progressive): Gradually unfreeze layers
-
-    Regularization:
-    - Dropout (0.5 in head)
-    - Batch normalization
-    - L2 weight decay
-    - Learning rate scheduling
-    - Early stopping
-
-    Optimization:
-    - AdamW with weight decay
-    - ReduceLROnPlateau scheduler
-    - Gradient clipping (optional)
-    """
-
+def run_single_architecture(args, architecture, data, device, seed, verbose=True):
     if verbose:
-        print(f"\n  ▶ Testing {architecture}...")
+        print(f"\n  ▶ {architecture}")
 
     set_seed(seed)
-
-    criterion = nn.CrossEntropyLoss()
+    class_weights = data["class_weights"].to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     results = {}
 
-    # ========== BASELINE: Train from scratch ==========
+    # ── SCRATCH ─────────────────────────────────────────────────────────
     if verbose:
-        print(f"    [1/4] Training {architecture} from scratch...")
-
-    scratch_model = build_cnn_model(architecture, NUM_MEDICAL_CLASSES, IMG_SIZE)
-    scratch_model = scratch_model.to(DEVICE)
-
-    # Count parameters
-    scratch_params = count_parameters(scratch_model)
-
-    # Optimizer with weight decay (L2 regularization)
-    optimizer_scratch = optim.AdamW(
-        scratch_model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay
-    )
-
-    # Learning rate scheduler
-    scheduler_scratch = ReduceLROnPlateau(
-        optimizer_scratch, mode='min', factor=0.5, patience=3
-    )
-
-    # Early stopping
-    early_stopping_scratch = EarlyStopping(patience=5, min_delta=0.001, mode='max')
-
-    # Carbon tracker
-    tracker_scratch = GPUCarbonTracker(
-        f"{architecture}_scratch",
-        power_watts=GPU_POWER_WATTS
-    )
-
-    # Train
-    scratch_train = train_cnn_with_callbacks(
-        scratch_model, data["target_train"], data["target_test"],
-        criterion, optimizer_scratch, epochs=args.scratch_epochs,
-        device=DEVICE, scheduler=scheduler_scratch,
-        early_stopping=early_stopping_scratch, tracker=tracker_scratch,
-        verbose=False, label=f"{architecture}-scratch"
-    )
-
-    # Evaluate
-    scratch_test = evaluate_cnn(scratch_model, data["target_test"], criterion, DEVICE)
-
-    results["scratch"] = {
-        "test_acc": scratch_test["accuracy"],
-        "test_loss": scratch_test["loss"],
-        "carbon": scratch_train["carbon"],
-        "time_s": scratch_train["time_s"],
-        "trainable_params": scratch_params["trainable"],
-        "total_params": scratch_params["total"],
-        "history": scratch_train["history"],
-    }
-
+        print(f"    [1/4] Scratch (random init)...")
+    scratch_model = build_cnn_model(architecture).to(device)
+    p = count_parameters(scratch_model)
+    opt = optim.AdamW(scratch_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    sched = ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=3, min_lr=1e-6)
+    es = EarlyStopping(patience=7, mode='max')
+    tracker = make_carbon_tracker(f"{architecture}_scratch")
+    tracker.start()
+    tr = train_medical_cnn(scratch_model, data["target_train"], data["target_test"],
+                           criterion, opt, epochs=args.scratch_epochs, device=device,
+                           scheduler=sched, early_stopping=es,
+                           label=f"{architecture}-scratch", verbose=False)
+    carbon = tracker.stop()
+    m = compute_clinical_metrics(scratch_model, data["target_test"], device)
+    results["scratch"] = {**m, "carbon": carbon, "time_s": tr["time_s"],
+                          "total_params": p["total"], "trainable_params": p["trainable"],
+                          "frozen_params": p["frozen"]}
     if verbose:
-        print(f"       ✓ Scratch: {scratch_test['accuracy']:.1%} acc  "
-              f"│ {scratch_params['trainable']:,} params  "
-              f"│ {scratch_train['carbon']['co2_kg']:.2e} kg CO2  "
-              f"│ {scratch_train['time_s']:.1f}s")
+        print(f"       ✓ Scratch:  Sens={m['sensitivity']:.1%}  F1={m['f1']:.1%}  "
+              f"AUC={m['roc_auc']:.3f}  │ {p['total']:,} total ({p['trainable']:,} trainable)  "
+              f"│ {carbon['co2_kg']:.2e} kg CO2  │ {tr['time_s']:.1f}s")
 
-    # ========== TRANSFER 1: Frozen backbone (feature extraction) ==========
+    # ── FROZEN ──────────────────────────────────────────────────────────
     if verbose:
-        print(f"    [2/4] Transfer learning: frozen backbone...")
-
-    frozen_model = build_cnn_model(architecture, NUM_MEDICAL_CLASSES, IMG_SIZE)
-    frozen_model = frozen_model.to(DEVICE)
-
-    # Freeze backbone
+        print(f"    [2/4] Frozen backbone (head only)...")
+    frozen_model = build_cnn_model(architecture).to(device)
     frozen_model.freeze_backbone()
-    frozen_params = count_parameters(frozen_model)
-
-    # Only optimize classifier head
-    optimizer_frozen = optim.AdamW(
-        [p for p in frozen_model.parameters() if p.requires_grad],
-        lr=args.lr * 10,  # Higher LR for head training
-        weight_decay=args.weight_decay
-    )
-
-    scheduler_frozen = ReduceLROnPlateau(
-        optimizer_frozen, mode='min', factor=0.5, patience=3
-    )
-
-    early_stopping_frozen = EarlyStopping(patience=5, min_delta=0.001, mode='max')
-    tracker_frozen = GPUCarbonTracker(
-        f"{architecture}_frozen",
-        power_watts=GPU_POWER_WATTS
-    )
-
-    frozen_train = train_cnn_with_callbacks(
-        frozen_model, data["target_train"], data["target_test"],
-        criterion, optimizer_frozen, epochs=args.transfer_epochs,
-        device=DEVICE, scheduler=scheduler_frozen,
-        early_stopping=early_stopping_frozen, tracker=tracker_frozen,
-        verbose=False, label=f"{architecture}-frozen"
-    )
-
-    frozen_test = evaluate_cnn(frozen_model, data["target_test"], criterion, DEVICE)
-
-    results["frozen"] = {
-        "test_acc": frozen_test["accuracy"],
-        "test_loss": frozen_test["loss"],
-        "carbon": frozen_train["carbon"],
-        "time_s": frozen_train["time_s"],
-        "trainable_params": frozen_params["trainable"],
-        "total_params": frozen_params["total"],
-        "history": frozen_train["history"],
-    }
-
+    p = count_parameters(frozen_model)
+    opt = optim.AdamW([x for x in frozen_model.parameters() if x.requires_grad],
+                      lr=args.lr * 5, weight_decay=args.weight_decay)
+    sched = ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=3, min_lr=1e-6)
+    es = EarlyStopping(patience=7, mode='max')
+    tracker = make_carbon_tracker(f"{architecture}_frozen")
+    tracker.start()
+    tr = train_medical_cnn(frozen_model, data["target_train"], data["target_test"],
+                           criterion, opt, epochs=args.transfer_epochs, device=device,
+                           scheduler=sched, early_stopping=es,
+                           label=f"{architecture}-frozen", verbose=False)
+    carbon = tracker.stop()
+    m = compute_clinical_metrics(frozen_model, data["target_test"], device)
+    results["frozen"] = {**m, "carbon": carbon, "time_s": tr["time_s"],
+                         "total_params": p["total"], "trainable_params": p["trainable"],
+                         "frozen_params": p["frozen"]}
     if verbose:
-        print(f"       ✓ Frozen: {frozen_test['accuracy']:.1%} acc  "
-              f"│ {frozen_params['trainable']:,} params  "
-              f"│ {frozen_train['carbon']['co2_kg']:.2e} kg CO2  "
-              f"│ {frozen_train['time_s']:.1f}s")
+        print(f"       ✓ Frozen:   Sens={m['sensitivity']:.1%}  F1={m['f1']:.1%}  "
+              f"AUC={m['roc_auc']:.3f}  │ {p['trainable']:,} trainable / {p['total']:,} total  "
+              f"│ {carbon['co2_kg']:.2e} kg CO2  │ {tr['time_s']:.1f}s")
 
-    # ========== TRANSFER 2: Full fine-tuning ==========
+    # ── FINE-TUNE ───────────────────────────────────────────────────────
     if verbose:
-        print(f"    [3/4] Transfer learning: full fine-tuning...")
-
-    finetune_model = build_cnn_model(architecture, NUM_MEDICAL_CLASSES, IMG_SIZE)
-    finetune_model = finetune_model.to(DEVICE)
-
-    # Unfreeze all
-    finetune_model.unfreeze_backbone()
-    finetune_params = count_parameters(finetune_model)
-
-    # Discriminative learning rates (lower LR for backbone)
-    optimizer_finetune = optim.AdamW([
-        {'params': finetune_model.backbone.parameters(), 'lr': args.lr * 0.1},
-        {'params': finetune_model.classifier.parameters(), 'lr': args.lr}
-    ], weight_decay=args.weight_decay)
-
-    scheduler_finetune = ReduceLROnPlateau(
-        optimizer_finetune, mode='min', factor=0.5, patience=3
-    )
-
-    early_stopping_finetune = EarlyStopping(patience=5, min_delta=0.001, mode='max')
-    tracker_finetune = GPUCarbonTracker(
-        f"{architecture}_finetune",
-        power_watts=GPU_POWER_WATTS
-    )
-
-    finetune_train = train_cnn_with_callbacks(
-        finetune_model, data["target_train"], data["target_test"],
-        criterion, optimizer_finetune, epochs=args.transfer_epochs,
-        device=DEVICE, scheduler=scheduler_finetune,
-        early_stopping=early_stopping_finetune, tracker=tracker_finetune,
-        verbose=False, label=f"{architecture}-finetune"
-    )
-
-    finetune_test = evaluate_cnn(finetune_model, data["target_test"], criterion, DEVICE)
-
-    results["finetune"] = {
-        "test_acc": finetune_test["accuracy"],
-        "test_loss": finetune_test["loss"],
-        "carbon": finetune_train["carbon"],
-        "time_s": finetune_train["time_s"],
-        "trainable_params": finetune_params["trainable"],
-        "total_params": finetune_params["total"],
-        "history": finetune_train["history"],
-    }
-
+        print(f"    [3/4] Fine-tuning (discriminative LRs)...")
+    ft_model = build_cnn_model(architecture).to(device)
+    ft_model.unfreeze_backbone()
+    p = count_parameters(ft_model)
+    opt = optim.AdamW([
+        {'params': ft_model.backbone.parameters(), 'lr': args.lr * 0.1},
+        {'params': ft_model.classifier.parameters(), 'lr': args.lr}],
+        weight_decay=args.weight_decay)
+    sched = CosineAnnealingLR(opt, T_max=args.transfer_epochs, eta_min=1e-6)
+    es = EarlyStopping(patience=7, mode='max')
+    tracker = make_carbon_tracker(f"{architecture}_finetune")
+    tracker.start()
+    tr = train_medical_cnn(ft_model, data["target_train"], data["target_test"],
+                           criterion, opt, epochs=args.transfer_epochs, device=device,
+                           scheduler=sched, early_stopping=es,
+                           label=f"{architecture}-finetune", verbose=False)
+    carbon = tracker.stop()
+    m = compute_clinical_metrics(ft_model, data["target_test"], device)
+    results["finetune"] = {**m, "carbon": carbon, "time_s": tr["time_s"],
+                           "total_params": p["total"], "trainable_params": p["trainable"],
+                           "frozen_params": p["frozen"]}
     if verbose:
-        print(f"       ✓ Fine-tune: {finetune_test['accuracy']:.1%} acc  "
-              f"│ {finetune_params['trainable']:,} params  "
-              f"│ {finetune_train['carbon']['co2_kg']:.2e} kg CO2  "
-              f"│ {finetune_train['time_s']:.1f}s")
+        print(f"       ✓ FineTune: Sens={m['sensitivity']:.1%}  F1={m['f1']:.1%}  "
+              f"AUC={m['roc_auc']:.3f}  │ {p['total']:,} total  "
+              f"│ {carbon['co2_kg']:.2e} kg CO2  │ {tr['time_s']:.1f}s")
 
-    # ========== TRANSFER 3: Progressive unfreezing ==========
+    # ── PROGRESSIVE ─────────────────────────────────────────────────────
     if verbose:
-        print(f"    [4/4] Transfer learning: progressive unfreezing...")
-
-    progressive_model = build_cnn_model(architecture, NUM_MEDICAL_CLASSES, IMG_SIZE)
-    progressive_model = progressive_model.to(DEVICE)
-
-    # Start frozen
-    progressive_model.freeze_backbone()
-    progressive_params = count_parameters(progressive_model)
-
-    # Progressive training: gradually unfreeze layers
-    # Phase 1: Train head only (5 epochs)
-    optimizer_prog = optim.AdamW(
-        [p for p in progressive_model.parameters() if p.requires_grad],
-        lr=args.lr,
-        weight_decay=args.weight_decay
-    )
-
-    tracker_prog = GPUCarbonTracker(
-        f"{architecture}_progressive",
-        power_watts=GPU_POWER_WATTS
-    )
-    tracker_prog.start()
-
+        print(f"    [4/4] Progressive unfreezing...")
+    prog_model = build_cnn_model(architecture).to(device)
+    prog_model.freeze_backbone()
+    tracker = make_carbon_tracker(f"{architecture}_progressive")
+    tracker.start()
     start_prog = time.time()
 
-    # Phase 1: Head only
-    for epoch in range(5):
-        progressive_model.train()
-        for inputs, targets in data["target_train"]:
-            inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
-            optimizer_prog.zero_grad()
-            outputs = progressive_model(inputs)
-            loss = criterion(outputs, targets)
-            loss.backward()
-            optimizer_prog.step()
+    phase1_epochs = max(2, args.transfer_epochs * 2 // 5)
+    opt = optim.AdamW([x for x in prog_model.parameters() if x.requires_grad],
+                      lr=args.lr * 5, weight_decay=args.weight_decay)
+    train_medical_cnn(prog_model, data["target_train"], data["target_test"],
+                      criterion, opt, epochs=phase1_epochs, device=device,
+                      label=f"{architecture}-prog-p1", verbose=False)
 
-    # Phase 2: Unfreeze top layers
-    progressive_model.unfreeze_top_layers(n_layers=3)
-    optimizer_prog = optim.AdamW([
-        {'params': progressive_model.backbone.parameters(), 'lr': args.lr * 0.1},
-        {'params': progressive_model.classifier.parameters(), 'lr': args.lr}
-    ], weight_decay=args.weight_decay)
+    prog_model.unfreeze_top_layers(n_layers=5)
+    phase2_epochs = max(2, args.transfer_epochs * 3 // 10)
+    opt = optim.AdamW([
+        {'params': prog_model.backbone.parameters(), 'lr': args.lr * 0.05},
+        {'params': prog_model.classifier.parameters(), 'lr': args.lr * 0.5}],
+        weight_decay=args.weight_decay)
+    train_medical_cnn(prog_model, data["target_train"], data["target_test"],
+                      criterion, opt, epochs=phase2_epochs, device=device,
+                      label=f"{architecture}-prog-p2", verbose=False)
 
-    for epoch in range(args.transfer_epochs - 5):
-        progressive_model.train()
-        for inputs, targets in data["target_train"]:
-            inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
-            optimizer_prog.zero_grad()
-            outputs = progressive_model(inputs)
-            loss = criterion(outputs, targets)
-            loss.backward()
-            optimizer_prog.step()
+    prog_model.unfreeze_backbone()
+    phase3_epochs = max(2, args.transfer_epochs - phase1_epochs - phase2_epochs)
+    opt = optim.AdamW([
+        {'params': prog_model.backbone.parameters(), 'lr': args.lr * 0.01},
+        {'params': prog_model.classifier.parameters(), 'lr': args.lr * 0.1}],
+        weight_decay=args.weight_decay)
+    train_medical_cnn(prog_model, data["target_train"], data["target_test"],
+                      criterion, opt, epochs=phase3_epochs, device=device,
+                      label=f"{architecture}-prog-p3", verbose=False)
 
     elapsed_prog = time.time() - start_prog
-    carbon_prog = tracker_prog.stop()
-
-    progressive_test = evaluate_cnn(progressive_model, data["target_test"], criterion, DEVICE)
-
-    results["progressive"] = {
-        "test_acc": progressive_test["accuracy"],
-        "test_loss": progressive_test["loss"],
-        "carbon": carbon_prog,
-        "time_s": elapsed_prog,
-        "trainable_params": progressive_params["trainable"],
-        "total_params": progressive_params["total"],
-    }
-
+    carbon = tracker.stop()
+    m = compute_clinical_metrics(prog_model, data["target_test"], device)
+    p = count_parameters(prog_model)
+    results["progressive"] = {**m, "carbon": carbon, "time_s": elapsed_prog,
+                              "total_params": p["total"], "trainable_params": p["trainable"],
+                              "frozen_params": p["frozen"]}
     if verbose:
-        print(f"       ✓ Progressive: {progressive_test['accuracy']:.1%} acc  "
-              f"│ {carbon_prog['co2_kg']:.2e} kg CO2  "
-              f"│ {elapsed_prog:.1f}s")
+        print(f"       ✓ Progress: Sens={m['sensitivity']:.1%}  F1={m['f1']:.1%}  "
+              f"AUC={m['roc_auc']:.3f}  │ {carbon['co2_kg']:.2e} kg CO2  │ {elapsed_prog:.1f}s")
 
-    return {
-        "architecture": architecture,
-        "results": results,
-        "best_strategy": max(results.items(), key=lambda x: x[1]["test_acc"])[0],
-    }
+    best_strategy = max(results.items(), key=lambda x: x[1]["f1"])[0]
+    return {"architecture": architecture, "results": results, "best_strategy": best_strategy}
 
 
-def compare_all_architectures(args, data, seed):
+
+# ============================================================================
+# LOW-DATA REGIME
+# ============================================================================
+
+def run_low_data_experiment(args, architecture, device, seed, verbose=True):
     """
-    Compare all CNN architectures on medical imaging task.
+    Compare scratch vs frozen transfer across data regimes: 100%, 50%, 25%, 10%.
 
-    This is the comprehensive benchmarking function that:
-    1. Tests each architecture (VGG, ResNet, Inception, etc.)
-    2. For each: scratch, frozen, fine-tune, progressive
-    3. Tracks CO2, time, parameters, accuracy for each
-    4. Identifies best architecture-strategy combination
-    5. Provides efficiency vs. accuracy tradeoffs
+    On synthetic data, scratch may win because the class signal is a simple
+    global statistic learnable by any architecture. The value of this
+    experiment is showing the pipeline, CO2 tracking per regime, and
+    parameter accounting — not proving transfer superiority on synthetic data.
+
+    On real histopathology (BreakHis, PatchCamelyon), published literature
+    consistently shows pretrained backbones outperforming scratch at ≤25%
+    labeled data (Spanhol et al. 2016, Veeling et al. 2018).
     """
+    if verbose:
+        print(f"\n  ▶ Low-Data Regime: {architecture}")
 
-    print_section_header("SCENARIO 4: Deep Learning - Medical Image Classification",
-                        "Comprehensive CNN Architecture Comparison")
+    regime_results = {}
+    for frac in DATA_REGIMES:
+        if verbose:
+            print(f"    [{int(frac*100)}% data]", end="  ", flush=True)
 
-    print(f"\n  REAL-WORLD USE CASE: Breast Cancer Histopathology Classification")
-    print(f"  ─────────────────────────────────────────────────────────────────")
-    print(f"  Problem: Classify histopathology images as benign or malignant")
-    print(f"  Source Domain: General histopathology (varied equipment, staining)")
-    print(f"  Target Domain: Specific hospital protocol (limited labeled data)")
-    print(f"  ")
-    print(f"  Why This Matters:")
-    print(f"    • Medical datasets require expensive expert annotation")
-    print(f"    • Hospitals in developing countries have limited compute")
-    print(f"    • False negatives cost lives - high accuracy is critical")
-    print(f"    • Parameter efficiency enables edge deployment in clinics")
-    print(f"  ")
-    print(f"  Dataset Configuration:")
-    print(f"    • Source: {data['n_source']} samples (general histopathology)")
-    print(f"    • Target train: {data['n_target_train']} samples (hospital-specific)")
-    print(f"    • Target test: {data['n_target_test']} samples")
-    print(f"    • Image size: {IMG_SIZE}x{IMG_SIZE}x3")
-    print(f"    • Classes: {NUM_MEDICAL_CLASSES} (benign, malignant)")
+        set_seed(seed)
+        data = create_medical_dataloaders(
+            n_source=args.n_source, n_target_train=args.n_target_train,
+            n_target_test=args.n_target_test, img_size=IMG_SIZE,
+            batch_size=args.batch_size, seed=seed, target_frac=frac)
 
-    # Select architectures based on args
-    if args.quick:
-        architectures_to_test = ["EfficientNetB0", "ResNet50"]
-    elif args.cnn_only:
-        architectures_to_test = CNN_ARCHITECTURES[:6]  # Subset for faster demo
-    else:
-        architectures_to_test = CNN_ARCHITECTURES
+        class_weights = data["class_weights"].to(device)
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
 
-    print(f"\n  Testing {len(architectures_to_test)} CNN architectures:")
-    for i, arch in enumerate(architectures_to_test, 1):
-        print(f"    [{i}] {arch}")
+        # Scratch
+        scratch_model = build_cnn_model(architecture).to(device)
+        opt_s = optim.AdamW(scratch_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        sched_s = ReduceLROnPlateau(opt_s, mode='min', factor=0.5, patience=3, min_lr=1e-6)
+        tracker_s = make_carbon_tracker(f"{architecture}_scratch_{int(frac*100)}")
+        tracker_s.start()
+        train_medical_cnn(scratch_model, data["target_train"], data["target_test"],
+                          criterion, opt_s, epochs=args.scratch_epochs, device=device,
+                          scheduler=sched_s, label="scratch", verbose=False)
+        carbon_s = tracker_s.stop()
+        metrics_s = compute_clinical_metrics(scratch_model, data["target_test"], device)
 
-    # Run all architectures
-    all_architecture_results = []
+        # Transfer (frozen)
+        frozen_model = build_cnn_model(architecture).to(device)
+        frozen_model.freeze_backbone()
+        opt_f = optim.AdamW([x for x in frozen_model.parameters() if x.requires_grad],
+                            lr=args.lr * 5, weight_decay=args.weight_decay)
+        sched_f = ReduceLROnPlateau(opt_f, mode='min', factor=0.5, patience=3, min_lr=1e-6)
+        tracker_f = make_carbon_tracker(f"{architecture}_frozen_{int(frac*100)}")
+        tracker_f.start()
+        train_medical_cnn(frozen_model, data["target_train"], data["target_test"],
+                          criterion, opt_f, epochs=args.transfer_epochs, device=device,
+                          scheduler=sched_f, label="frozen", verbose=False)
+        carbon_f = tracker_f.stop()
+        metrics_f = compute_clinical_metrics(frozen_model, data["target_test"], device)
 
-    for architecture in architectures_to_test:
+        regime_results[frac] = {
+            "n_target": data["n_target_train"],
+            "scratch": {**metrics_s, "carbon": carbon_s},
+            "frozen": {**metrics_f, "carbon": carbon_f},
+        }
+
+        if verbose:
+            n = data["n_target_train"]
+            s_f1, f_f1 = metrics_s["f1"], metrics_f["f1"]
+            gap = f_f1 - s_f1
+            co2_saved = (1 - carbon_f["co2_kg"] / max(carbon_s["co2_kg"], 1e-12))
+            print(f"n={n:>4}  Scratch F1={s_f1:.1%}  Transfer F1={f_f1:.1%}  "
+                  f"Δ={gap:+.1%}  CO2 saved={co2_saved:.0%}")
+
+    return regime_results
+
+
+
+# ============================================================================
+# COMPREHENSIVE RESULTS (FIX 2: show total/trainable/frozen + official ref)
+# ============================================================================
+
+def run_dl_comprehensive_scenario(args, device, seed, verbose=True):
+    print_section_header(
+        "SCENARIO 4: Deep Learning — Synthetic Histopathology Proof-of-Concept",
+        "3 Architectures × 4 Strategies × 4 Data Regimes")
+
+    print(f"\n  SYNTHETIC PROOF-OF-CONCEPT (not a clinical evaluation)")
+    print(f"  ─────────────────────────────────────────────────────────")
+    print(f"  Dataset:    Synthetic images mimicking BreakHis structure")
+    print(f"  Source:     Simulated 400X magnification ({args.n_source} images)")
+    print(f"  Target:     Simulated 40X magnification ({args.n_target_train} train, "
+          f"{args.n_target_test} test)")
+    print(f"  Classes:    Benign vs Malignant (imbalanced ~31/69%)")
+    print(f"  Image size: {IMG_SIZE}×{IMG_SIZE}×3 (ImageNet-normalized)")
+    print(f"  Split:      Independent random seeds (no patient-aware split needed)")
+    print(f"  Note:       For real validation, use BreakHis with patient-aware splits")
+    print(f"")
+    print(f"  Official TorchVision full-model counts (reference only):")
+    for name, info in OFFICIAL_PARAMS.items():
+        print(f"    {name:<16} {info['total']:>12,} params  {info['size_mb']:>6.1f} MB")
+    if not _HAS_TORCHVISION:
+        print(f"\n  ⚠ torchvision not installed. Using lightweight fallback architectures.")
+        print(f"    Experiment param counts will be much smaller than official counts above.")
+
+    data_full = create_medical_dataloaders(
+        n_source=args.n_source, n_target_train=args.n_target_train,
+        n_target_test=args.n_target_test, img_size=IMG_SIZE,
+        batch_size=args.batch_size, seed=seed, target_frac=1.0)
+
+    # Part 1: Architecture × Strategy
+    print_section_header("Part 1: Architecture × Strategy Comparison (100% data)")
+    arch_results = []
+    for arch in FOCUSED_ARCHITECTURES:
         try:
-            result = run_dl_medical_imaging_scenario(
-                args, architecture, data, seed, verbose=True
-            )
-            all_architecture_results.append(result)
+            result = run_single_architecture(args, arch, data_full, device, seed, verbose=verbose)
+            arch_results.append(result)
         except Exception as e:
-            print(f"       ✗ {architecture} failed: {str(e)}")
-            continue
+            print(f"    ✗ {arch} failed: {e}")
 
-    # ========== COMPREHENSIVE RESULTS TABLE ==========
-    print_section_header("Architecture Comparison Results")
+    if arch_results:
+        # Table note
+        if _HAS_TORCHVISION:
+            print(f"\n  Note: 'Exp Params' = TorchVision backbone (minus original classifier)")
+            print(f"        + our custom 2-layer head. Smaller than official full-model counts.")
+        else:
+            print(f"\n  ⚠ torchvision not installed — using lightweight fallback architectures.")
+            print(f"    Param counts below are for the FALLBACK models, NOT official")
+            print(f"    ResNet50/EfficientNetB0/MobileNetV2. Install torchvision for real weights.")
 
-    print(f"\n  PERFORMANCE SUMMARY")
-    print(f"  {'Architecture':<20} {'Best Strategy':<15} {'Accuracy':<12} {'Params':<15} {'CO2 (kg)':<12} {'Time (s)':<10}")
-    print("  " + "-" * 100)
+        # Fixed-width table: W=108 inner chars
+        W = 108
+        print(f"\n  ┌{'─'*W}┐")
+        hdr = (f" {'Arch':<15} {'Strategy':<12} {'Sens':>7} {'F1':>7} {'AUC':>6}"
+               f"  {'Exp Params':>12} {'Trainable':>12} {'Frozen':>12}"
+               f"  {'CO2(g)':>8} {'Time':>6} ")
+        print(f"  │{hdr:<{W}}│")
+        print(f"  ├{'─'*W}┤")
 
-    for arch_result in all_architecture_results:
-        arch = arch_result["architecture"]
-        best_strat = arch_result["best_strategy"]
-        best_res = arch_result["results"][best_strat]
+        for ar in arch_results:
+            arch = ar["architecture"]
+            for sn, sd in ar["results"].items():
+                mk = "★" if sn == ar["best_strategy"] else " "
+                co2_g = sd["carbon"]["co2_kg"] * 1000
+                row = (f" {mk}{arch:<14} {sn:<12} {sd['sensitivity']:>6.1%} "
+                       f"{sd['f1']:>6.1%} {sd['roc_auc']:>5.3f}"
+                       f"  {sd['total_params']:>12,} {sd['trainable_params']:>12,}"
+                       f" {sd['frozen_params']:>12,}"
+                       f"  {co2_g:>7.3f} {sd['time_s']:>5.1f}s ")
+                print(f"  │{row:<{W}}│")
+            print(f"  ├{'─'*W}┤")
 
-        print(f"  {arch:<20} {best_strat:<15} {best_res['test_acc']:<11.1%} "
-              f"{best_res['trainable_params']:>14,} {best_res['carbon']['co2_kg']:<11.2e} "
-              f"{best_res['time_s']:<9.1f}")
+        best_arch = max(arch_results, key=lambda x: x["results"][x["best_strategy"]]["f1"])
+        best_strat = best_arch["best_strategy"]
+        bd = best_arch["results"][best_strat]
+        sd = best_arch["results"]["scratch"]
+        co2_red = (1 - bd["carbon"]["co2_kg"] / max(sd["carbon"]["co2_kg"], 1e-12)) * 100
+        param_red = (1 - bd["trainable_params"] / max(sd["trainable_params"], 1)) * 100
 
-    # Find overall best
-    if all_architecture_results:
-        best_overall = max(all_architecture_results,
-                          key=lambda x: x["results"][x["best_strategy"]]["test_acc"])
+        best_row = (f" ★ BEST: {best_arch['architecture']} + {best_strat}"
+                    f"   F1={bd['f1']:.1%}  Sens={bd['sensitivity']:.1%}"
+                    f"  AUC={bd['roc_auc']:.3f}"
+                    f"   CO2 red={co2_red:.0f}%  Param red={param_red:.0f}% ")
+        print(f"  │{best_row:<{W}}│")
+        print(f"  └{'─'*W}┘")
 
-        print(f"\n  ⭐ BEST OVERALL: {best_overall['architecture']} with {best_overall['best_strategy']}")
-        print(f"     Accuracy: {best_overall['results'][best_overall['best_strategy']]['test_acc']:.1%}")
-        print(f"     CO2 saved vs scratch: {100 * (1 - best_overall['results'][best_overall['best_strategy']]['carbon']['co2_kg'] / best_overall['results']['scratch']['carbon']['co2_kg']):.1f}%")
-    else:
-        print(f"\n  ⚠️  No architectures completed successfully")
-        best_overall = None
+        print_clinical_metrics(bd, f"★ {best_arch['architecture']}+{best_strat}")
 
-    # ========== EFFICIENCY ANALYSIS ==========
-    if all_architecture_results:
-        print(f"\n  EFFICIENCY ANALYSIS (Parameter Count vs. Accuracy)")
-        print(f"  {'Architecture':<20} {'Params (M)':<12} {'Accuracy':<12} {'Efficiency Score':<15}")
-        print("  " + "-" * 70)
+    # Part 2: Low-Data Regime
+    print_section_header("Part 2: Low-Data Regime Experiment",
+                         "How do scratch and transfer compare as data shrinks?")
+    print(f"\n  EXPERIMENT: Compare scratch vs frozen-backbone transfer at 100/50/25/10% data.")
+    print(f"  Results depend on data size and signal complexity. This experiment")
+    print(f"  demonstrates the evaluation pipeline and per-regime CO2 tracking.")
 
-        for arch_result in all_architecture_results:
-            arch = arch_result["architecture"]
-            best_strat = arch_result["best_strategy"]
-            best_res = arch_result["results"][best_strat]
+    low_data_arch = best_arch["architecture"] if arch_results else "EfficientNetB0"
+    low_data_results = run_low_data_experiment(args, low_data_arch, device, seed, verbose=verbose)
 
-            params_m = best_res['total_params'] / 1e6
-            acc = best_res['test_acc']
-            # Efficiency score: accuracy per million parameters
-            eff_score = acc / params_m if params_m > 0 else 0
+    if low_data_results:
+        W2 = 80
+        print(f"\n  ┌{'─'*W2}┐")
+        hdr2 = f" {'Data%':>6} {'N':>5} {'Scratch F1':>11} {'Transfer F1':>12} {'Δ F1':>7} {'CO2 Saved':>10} {'Verdict':>17} "
+        print(f"  │{hdr2:<{W2}}│")
+        print(f"  ├{'─'*W2}┤")
+        for frac, rd in sorted(low_data_results.items(), reverse=True):
+            s_f1, f_f1 = rd["scratch"]["f1"], rd["frozen"]["f1"]
+            gap = f_f1 - s_f1
+            co2_s, co2_f = rd["scratch"]["carbon"]["co2_kg"], rd["frozen"]["carbon"]["co2_kg"]
+            co2_saved = (1 - co2_f / max(co2_s, 1e-12)) * 100
+            if gap > 0.05:
+                verdict = "TRANSFER WINS ★"
+            elif gap > -0.02:
+                verdict = "COMPARABLE"
+            else:
+                verdict = "SCRATCH WINS"
+            row2 = (f" {frac:>5.0%} {rd['n_target']:>5} {s_f1:>10.1%}"
+                    f" {f_f1:>11.1%} {gap:>+6.1%} {co2_saved:>9.0f}%"
+                    f" {verdict:>17} ")
+            print(f"  │{row2:<{W2}}│")
+        print(f"  └{'─'*W2}┘")
 
-            print(f"  {arch:<20} {params_m:<11.2f} {acc:<11.1%} {eff_score:<14.4f}")
+        # Data-driven interpretation (reads actual results, not hardcoded)
+        n_transfer_wins = sum(1 for rd in low_data_results.values()
+                              if rd["frozen"]["f1"] - rd["scratch"]["f1"] > 0.05)
+        n_scratch_wins = sum(1 for rd in low_data_results.values()
+                             if rd["scratch"]["f1"] - rd["frozen"]["f1"] > 0.02)
+        n_comparable = len(low_data_results) - n_transfer_wins - n_scratch_wins
 
-    # ========== CARBON FOOTPRINT ANALYSIS ==========
-    if all_architecture_results:
-        print(f"\n  CARBON FOOTPRINT ANALYSIS")
-        print(f"  {'Architecture':<20} {'Strategy':<15} {'CO2 (g)':<12} {'Saved vs Scratch':<18}")
-        print("  " + "-" * 70)
+        print(f"\n  INTERPRETATION ({n_scratch_wins} scratch wins, "
+              f"{n_transfer_wins} transfer wins, {n_comparable} comparable):")
+        if n_transfer_wins > 0:
+            print(f"  Transfer outperformed scratch in {n_transfer_wins} of "
+                  f"{len(low_data_results)} regimes, particularly at low data")
+            print(f"  where scratch struggled to converge. Frozen transfer also")
+            print(f"  consistently used less CO2 (fewer backward passes).")
+        else:
+            print(f"  On this synthetic task, scratch matched or beat frozen transfer")
+            print(f"  across all tested regimes. Frozen transfer still used less CO2.")
+        print(f"  Real histopathology tasks are more likely to benefit from pretrained")
+        print(f"  texture and shape features than this iid synthetic signal.")
 
-        for arch_result in all_architecture_results:
-            arch = arch_result["architecture"]
-            scratch_co2 = arch_result["results"]["scratch"]["carbon"]["co2_kg"] * 1000
+    # Part 3: Deployment (FIX 2: use official sizes)
+    if arch_results:
+        print_section_header("Part 3: Edge Deployment Analysis",
+                             "Which model can run on a hospital server?")
+        print(f"\n  {'Architecture':<16} {'Exp Params':>12} {'Trainable(frozen)':>20}"
+              f" {'Official Size':>14} {'Edge?':>7}")
+        print(f"  {'─'*73}")
+        for ar in arch_results:
+            arch = ar["architecture"]
+            total = ar["results"]["scratch"]["total_params"]
+            trainable = ar["results"]["frozen"]["trainable_params"]
+            frozen = ar["results"]["frozen"]["frozen_params"]
+            official = OFFICIAL_PARAMS.get(arch, {})
+            off_sz = official.get("size_mb", model_size_mb(total))
+            edge = "✓ YES" if off_sz < 50 else "✗ NO"
+            print(f"  {arch:<16} {total:>11,}  {trainable:>8,} ({frozen:>10,})"
+                  f" {off_sz:>10.1f} MB  {edge:>5}")
+        print(f"\n  Edge threshold: <50 MB (official model size).")
+        print(f"  MobileNetV2 (13.6 MB) and EfficientNetB0 (20.5 MB) are edge-deployable.")
 
-            for strategy in ["frozen", "finetune", "progressive"]:
-                if strategy in arch_result["results"]:
-                    strat_co2 = arch_result["results"][strategy]["carbon"]["co2_kg"] * 1000
-                    saved_pct = 100 * (1 - strat_co2 / scratch_co2) if scratch_co2 > 0 else 0
+    return {"arch_results": arch_results, "low_data_results": low_data_results}
 
-                    print(f"  {arch:<20} {strategy:<15} {strat_co2:<11.2f} {saved_pct:>16.1f}%")
-
-    return {
-        "all_results": all_architecture_results,
-        "best_overall": best_overall,
-    }
-
-
-# ============================================================================
-# TRANSFORMER SCENARIO (Keep from original)
-# ============================================================================
-
-class LLMClassifier(nn.Module):
-    """DistilBERT wrapper with classification head."""
-
-    def __init__(self, model_name, num_labels):
-        super().__init__()
-        from transformers import AutoModel
-
-        # Suppress HuggingFace download messages
-        sys.stdout.flush()
-        sys.stderr.flush()
-        old_out = os.dup(1)
-        old_err = os.dup(2)
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 1)
-        os.dup2(devnull, 2)
-        try:
-            self.transformer = AutoModel.from_pretrained(model_name)
-        finally:
-            os.dup2(old_out, 1)
-            os.dup2(old_err, 2)
-            os.close(devnull)
-            os.close(old_out)
-            os.close(old_err)
-
-        hidden = self.transformer.config.hidden_size
-        self.classifier = nn.Sequential(
-            nn.Dropout(0.1),
-            nn.Linear(hidden, num_labels),
-        )
-
-    def encode(self, x):
-        input_ids = x[:, 0, :].long()
-        attention_mask = x[:, 1, :].long()
-        outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
-        return outputs.last_hidden_state[:, 0, :]
-
-    def forward(self, x):
-        return self.classifier(self.encode(x))
-
-
-def load_sentiment_dataset(tokenizer, max_samples, max_length, seed):
-    """Load SST-2 sentiment dataset."""
-    from datasets import load_dataset
-
-    ds = load_dataset("stanfordnlp/sst2")
-    train_ds = ds["train"].shuffle(seed=seed).select(range(min(max_samples, len(ds["train"]))))
-    val_ds = ds["validation"].shuffle(seed=seed+1).select(range(min(400, len(ds["validation"]))))
-    test_ds = ds["validation"].shuffle(seed=seed+2).select(range(min(400, len(ds["validation"]))))
-
-    def encode(split_ds):
-        texts = [str(x) for x in split_ds["sentence"]]
-        labels = [int(x) for x in split_ds["label"]]
-        encoded = tokenizer(texts, padding="max_length", truncation=True,
-                          max_length=max_length, return_tensors="pt")
-        packed = torch.stack([encoded["input_ids"].long(),
-                             encoded["attention_mask"].long()], dim=1)
-        labels_t = torch.tensor(labels, dtype=torch.long)
-        return packed, labels_t
-
-    train_x, train_y = encode(train_ds)
-    val_x, val_y = encode(val_ds)
-    test_x, test_y = encode(test_ds)
-
-    return {
-        "train": DataLoader(TensorDataset(train_x, train_y), batch_size=32, shuffle=True),
-        "val": DataLoader(TensorDataset(val_x, val_y), batch_size=64),
-        "test": DataLoader(TensorDataset(test_x, test_y), batch_size=64),
-        "num_labels": 2,
-        "n_train": len(train_x),
-    }
-
-
-def run_dl_sentiment_scenario(args, tokenizer, seed):
-    """Run DistilBERT + LoRA scenario (kept from original)."""
-
-    print_section_header("SCENARIO 5: Deep Learning with LoRA (Transformers)",
-                        "Parameter-Efficient Transfer Learning (66M → 73K params)")
-
-    # [Keep original implementation from run_amazon_sustainability_demo.py]
-    # This is already well-implemented in the original script
-
-    print("  [Transformer scenario kept from original - see lines 610-748]")
-    return None
 
 
 # ============================================================================
-# AGGREGATE & REPORT
+# AGGREGATE & SUSTAINABILITY SUMMARY (FIX 6: honest numbers, no inflated claims)
 # ============================================================================
 
 def aggregate_ml_runs(runs, methods):
-    """Aggregate classical ML results across seeds."""
     summary = {}
     for method in methods:
         scores = [r[method]["score"] for r in runs]
         co2 = [r[method]["carbon"]["co2_kg"] for r in runs]
         time_s = [r[method]["carbon"]["time_s"] for r in runs]
-        summary[method] = {
-            "score": summarize(scores),
-            "co2": summarize(co2),
-            "time": summarize(time_s),
-        }
+        summary[method] = {"score": summarize(scores), "co2": summarize(co2), "time": summarize(time_s)}
     return summary
 
 
 def print_ml_scenario_results(scenario_name, runs, methods, metric_name, pct=False):
-    """Print classical ML scenario results."""
-    print_section_header(f"{scenario_name} - Results")
-
+    print_section_header(f"{scenario_name} — Results")
     decision = runs[0]["decision"]
-    gate_status = "SAFE TO TRANSFER" if decision['recommend'] else "SKIP TRANSFER"
-    print(f"  Transfer Gate Decision: [{gate_status}]")
-    print(f"  Distribution Metrics: MMD²={decision['mmd']:.4f} | PAD={decision['pad']:.4f} | KS-shift={decision['ks_fraction']:.0%}")
-    print(f"\n  Dataset: Target={runs[0]['n_target']} samples | Source={runs[0]['n_source']} samples")
-
+    gate = "SAFE TO TRANSFER" if decision['recommend'] else "SKIP TRANSFER"
+    print(f"  Transfer Gate: [{gate}]")
+    print(f"  Distribution: MMD²={decision['mmd']:.4f} | PAD={decision['pad']:.4f} | KS-shift={decision['ks_fraction']:.0%}")
+    print(f"  Dataset: Target={runs[0]['n_target']} | Source={runs[0]['n_source']}")
     summary = aggregate_ml_runs(runs, methods)
-
     print(f"\n  {'Method':<16} {metric_name:<24} CO2 (kg)           Time (s)")
     print("  " + "-" * 78)
-
     for method in methods:
         score_str = fmt_stats(summary[method]["score"], pct=pct)
         co2_mean, co2_std = summary[method]["co2"][:2]
@@ -1751,175 +1238,292 @@ def print_ml_scenario_results(scenario_name, runs, methods, metric_name, pct=Fal
 
 
 def print_sustainability_summary(all_results):
-    """Print final sustainability metrics summary."""
     print_section_header("CARBON EMISSION & SUSTAINABILITY IMPACT ANALYSIS",
-                        "Amazon Challenge: Minimize Waste | Track Ecological Impact | Enable Greener Practices")
+                         "Amazon Challenge: Minimize Waste | Track Impact | Greener Practices")
 
-    # Aggregate all CO2 metrics
     total_scratch_co2 = 0.0
     total_transfer_co2 = 0.0
-    total_scratch_time = 0.0
-    total_transfer_time = 0.0
 
-    # Classical ML scenarios
     for key in ["housing", "health"]:
         if key in all_results:
             runs = all_results[key]
-            scratch_co2 = np.mean([r["scratch"]["carbon"]["co2_kg"] for r in runs])
-            transfer_co2 = np.mean([r["bayesian"]["carbon"]["co2_kg"] for r in runs])
-            scratch_time = np.mean([r["scratch"]["carbon"]["time_s"] for r in runs])
-            transfer_time = np.mean([r["bayesian"]["carbon"]["time_s"] for r in runs])
+            total_scratch_co2 += np.mean([r["scratch"]["carbon"]["co2_kg"] for r in runs])
+            total_transfer_co2 += np.mean([r["bayesian"]["carbon"]["co2_kg"] for r in runs])
 
-            total_scratch_co2 += scratch_co2
-            total_transfer_co2 += transfer_co2
-            total_scratch_time += scratch_time
-            total_transfer_time += transfer_time
-
-    # Deep learning CNNs
-    if "cnn_comparison" in all_results and all_results["cnn_comparison"]["best_overall"] is not None:
-        best = all_results["cnn_comparison"]["best_overall"]
-        best_strat = best["best_strategy"]
-        total_scratch_co2 += best["results"]["scratch"]["carbon"]["co2_kg"]
-        total_transfer_co2 += best["results"][best_strat]["carbon"]["co2_kg"]
-        total_scratch_time += best["results"]["scratch"]["time_s"]
-        total_transfer_time += best["results"][best_strat]["time_s"]
+    # DL: compare scratch vs frozen (the actual transfer strategy)
+    if "dl_comprehensive" in all_results:
+        dl = all_results["dl_comprehensive"]
+        if dl.get("arch_results"):
+            for ar in dl["arch_results"]:
+                total_scratch_co2 += ar["results"]["scratch"]["carbon"]["co2_kg"]
+                total_transfer_co2 += ar["results"]["frozen"]["carbon"]["co2_kg"]
 
     co2_saved = total_scratch_co2 - total_transfer_co2
     co2_saved_pct = 100.0 * co2_saved / total_scratch_co2 if total_scratch_co2 > 0 else 0
 
-    print(f"\n  AGGREGATE CARBON EMISSION METRICS")
-    print(f"  {'Metric':<32} Baseline (Scratch)    Transfer Learning    Reduction")
-    print("  " + "-" * 80)
-    print(f"  {'Total CO2 Emissions':<32} {total_scratch_co2:.2e} kg       "
-          f"{total_transfer_co2:.2e} kg       {co2_saved_pct:.1f}%")
+    print(f"\n  AGGREGATE CARBON METRICS (this run)")
 
-    # Real-world equivalents
-    equiv = calculate_real_world_equivalents(co2_saved)
+    # Build honest description of what's aggregated
+    agg_parts = []
+    if "housing" in all_results or "health" in all_results:
+        agg_parts.append("ML scratch/Bayesian")
+    if "dl_comprehensive" in all_results and all_results["dl_comprehensive"].get("arch_results"):
+        agg_parts.append("DL scratch/frozen per architecture")
+    agg_desc = " + ".join(agg_parts) if agg_parts else "N/A"
 
-    print(f"\n  REAL-WORLD CARBON EQUIVALENTS (PER EXPERIMENT)")
-    print(f"  {'Comparison Metric':<32} Equivalent Amount")
-    print("  " + "-" * 60)
-    print(f"  {'CO2 saved':<32} {equiv['co2_grams']:.4f} grams")
-    print(f"  {'Gasoline car driving':<32} {equiv['car_km']:.4f} km")
-    print(f"  {'Smartphone charges':<32} {equiv['phone_charges']:.3f} charges")
-    print(f"  {'Tree CO2 absorption':<32} {equiv['tree_months']:.3f} tree-months")
+    print(f"  Scratch  = sum of scratch-strategy CO2 across: {agg_desc}")
+    print(f"  Transfer = sum of transfer-strategy CO2 across: {agg_desc}")
+    print(f"\n  {'Metric':<32} {'Scratch':>14} {'Transfer':>14} {'Reduction':>10}")
+    print("  " + "-" * 75)
+    print(f"  {'Total CO2':<32} {total_scratch_co2:.2e} kg  {total_transfer_co2:.2e} kg  {co2_saved_pct:.1f}%")
 
-    # Scale to industry level
-    equiv_10000 = calculate_real_world_equivalents(co2_saved * 10000)
-    print(f"\n  INDUSTRY SCALE (10,000 EXPERIMENTS/YEAR):")
-    print(f"    - Total CO2 saved:          {co2_saved * 10000:.4f} kg")
-    print(f"    - Equivalent car driving:   {equiv_10000['car_km']:.1f} km")
-    print(f"    - Tree absorption time:     {equiv_10000['tree_months']:.0f} tree-months")
+    print(f"\n  Carbon measurement: {carbon_method_description()}")
+
+    # Scaling — honest, no "tonnes" claim unless the math supports it
+    print(f"\n  SCALING PROJECTIONS")
+    print(f"  (Multiply per-run savings by number of training runs)")
+    print(f"  {'Scale':<40} {'CO2 Saved':>14}")
+    print("  " + "-" * 58)
+    for label, mult in [("Per hospital (100 runs/yr)", 100),
+                        ("Regional (1,000 runs)", 1_000),
+                        ("National (10,000 runs)", 10_000),
+                        ("Global (100,000 runs)", 100_000)]:
+        saved = co2_saved * mult
+        if saved < 0.001:
+            s = f"{saved * 1e6:.1f} mg"
+        elif saved < 1:
+            s = f"{saved * 1000:.1f} g"
+        else:
+            s = f"{saved:.2f} kg"
+        print(f"  {label:<40} {s:>14}")
+
+    # Parameter efficiency
+    if "dl_comprehensive" in all_results and all_results["dl_comprehensive"].get("arch_results"):
+        print(f"\n  PARAMETER EFFICIENCY (frozen backbone vs scratch)")
+        print(f"  Frozen backbone trains only the classifier head. The backbone")
+        print(f"  weights are reused from {'ImageNet pretraining' if _HAS_TORCHVISION else 'fallback init'} (zero new learning).")
+        if not _HAS_TORCHVISION:
+            print(f"  ⚠ Using lightweight fallback models (torchvision not installed).")
+        print(f"\n  {'Architecture':<16} {'Exp Params':>13} {'Scratch trains':>16} {'Frozen trains':>15} {'Reduction':>10}")
+        print("  " + "-" * 75)
+        for ar in all_results["dl_comprehensive"]["arch_results"]:
+            arch = ar["architecture"]
+            full_t = ar["results"]["scratch"]["trainable_params"]
+            frozen_t = ar["results"]["frozen"]["trainable_params"]
+            total = ar["results"]["scratch"]["total_params"]
+            red = (1 - frozen_t / max(full_t, 1)) * 100
+            print(f"  {arch:<16} {total:>12,} {full_t:>15,} {frozen_t:>14,} {red:>9.1f}%")
+
+    # Low-data summary
+    if "dl_comprehensive" in all_results and all_results["dl_comprehensive"].get("low_data_results"):
+        ldr = all_results["dl_comprehensive"]["low_data_results"]
+        print(f"\n  LOW-DATA REGIME (synthetic data — see note)")
+        print(f"  {'Regime':<16} {'Scratch F1':>11} {'Transfer F1':>12} {'Gap':>8}")
+        print("  " + "-" * 50)
+        for frac in sorted(ldr.keys(), reverse=True):
+            rd = ldr[frac]
+            s_f1, f_f1 = rd["scratch"]["f1"], rd["frozen"]["f1"]
+            print(f"  {frac:>5.0%} ({rd['n_target']:>4}) {s_f1:>10.1%} {f_f1:>11.1%} {f_f1 - s_f1:>+7.1%}")
+        print(f"\n  Note: On synthetic iid noise, results vary by regime. Real")
+        print(f"  histopathology tasks are more likely to benefit from pretrained")
+        print(f"  texture and shape features. See Part 2 for per-regime details.")
+
 
 
 # ============================================================================
-# MAIN DEMO
+# FINAL NARRATIVE (FIX: honest, no inflated claims)
+# ============================================================================
+
+def print_final_narrative(all_results):
+    print_section_header("HACKFORGE — JUDGE-FACING NARRATIVE")
+
+    # ── Compute actual numbers from whatever was run ────────────────────
+    dl = all_results.get("dl_comprehensive", {})
+    arch_results = dl.get("arch_results", [])
+    ldr = dl.get("low_data_results", {})
+    has_ml = "housing" in all_results or "health" in all_results
+    has_dl = len(arch_results) > 0
+
+    co2_savings = []
+    param_reductions = []
+    for ar in arch_results:
+        s_co2 = ar["results"]["scratch"]["carbon"]["co2_kg"]
+        f_co2 = ar["results"]["frozen"]["carbon"]["co2_kg"]
+        if s_co2 > 0:
+            co2_savings.append((1 - f_co2 / s_co2) * 100)
+        s_p = ar["results"]["scratch"]["trainable_params"]
+        f_p = ar["results"]["frozen"]["trainable_params"]
+        if s_p > 0:
+            param_reductions.append((1 - f_p / s_p) * 100)
+
+    co2_range = (f"{min(co2_savings):.0f}-{max(co2_savings):.0f}%"
+                 if co2_savings else "N/A")
+    param_range = (f"{min(param_reductions):.0f}-{max(param_reductions):.0f}%"
+                   if param_reductions else "N/A")
+
+    # Low-data summary from actual results
+    n_transfer_wins = sum(1 for rd in ldr.values()
+                          if rd["frozen"]["f1"] - rd["scratch"]["f1"] > 0.05)
+    n_scratch_wins = sum(1 for rd in ldr.values()
+                         if rd["scratch"]["f1"] - rd["frozen"]["f1"] > 0.02)
+
+    print(f"""
+  WHAT HACKFORGE IS
+  ─────────────────
+  A from-scratch PyTorch framework for evaluating transfer learning
+  sustainability across the full ML spectrum: classical linear models,
+  Bayesian methods, and deep CNNs. Built entirely without sklearn models
+  or HuggingFace wrappers. 98 unit tests. 8 demo scripts.""")
+
+    # ── Only show classical ML section if it was actually run ───────────
+    if has_ml:
+        print(f"""
+  WHAT WE MEASURED (classical ML — real datasets)
+  ────────────────────────────────────────────────
+  - Bayesian transfer: closed-form, zero gradient steps, 85-99% CO2 reduction
+  - Regularized transfer: matches or beats scratch with fraction of compute
+  - Negative transfer gate: 100% detection rate, prevents 562x degradation
+  - These results are on real sklearn datasets with principled domain splits.""")
+
+    # ── Only show DL section if it was actually run ─────────────────────
+    if has_dl:
+        # Build honest low-data summary sentence
+        if n_transfer_wins > 0 and n_scratch_wins > 0:
+            ld_sentence = (f"  - Low-data regime: mixed results — transfer won in "
+                           f"{n_transfer_wins} regime(s), scratch in {n_scratch_wins}")
+        elif n_transfer_wins > 0:
+            ld_sentence = (f"  - Low-data regime: transfer outperformed scratch in "
+                           f"{n_transfer_wins} of {len(ldr)} tested regimes")
+        elif n_scratch_wins > 0:
+            ld_sentence = (f"  - Low-data regime: scratch outperformed transfer in "
+                           f"{n_scratch_wins} of {len(ldr)} tested regimes")
+        else:
+            ld_sentence = "  - Low-data regime: scratch and transfer comparable across tested regimes"
+
+        tv_note = "" if _HAS_TORCHVISION else " (lightweight fallback — install torchvision for real weights)"
+        print(f"""
+  WHAT WE MEASURED (deep learning — synthetic proof-of-concept{tv_note})
+  ─────────────────────────────────────────────────────────────
+  - Frozen backbone: {co2_range} CO2 reduction, {param_range} fewer trainable params
+{ld_sentence}
+  - Synthetic iid noise does not benefit from ImageNet texture features;
+    real histopathology tasks are more likely to show transfer advantage
+  - Pipeline, metrics, and carbon tracking validated for drop-in real data""")
+
+    print(f"""
+  WHAT THE FRAMEWORK PROVIDES
+  ───────────────────────────
+  - Carbon tracking: NVML (CUDA) or time-based estimation (MPS/CPU)
+  - Clinical metrics: sensitivity, specificity, F1, ROC-AUC, confusion matrix
+  - Parameter accounting: total / trainable / frozen, with official references
+  - Safety: negative transfer detection before wasting compute
+  - Deployment analysis: model size vs edge feasibility
+  - Low-data regime benchmarking: 100/50/25/10% data sweeps
+  - Reproducible: seeded experiments, JSON export, multi-seed aggregation
+
+  ─────────────────────────────────────────────────────────────────────────
+  Repository: https://github.com/pirlapal/TeamHackForgeAmazon
+""")
+
+
+
+# ============================================================================
+# MAIN
 # ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Amazon Sustainability Challenge - Comprehensive Transfer Learning Demo"
-    )
-    parser.add_argument("--seed", type=int, default=42, help="Base random seed")
-    parser.add_argument("--seeds", type=int, default=3, help="Number of seeds for ML scenarios")
-    parser.add_argument("--target-frac", type=float, default=0.25, help="Target domain data fraction")
-
-    # ML scenario flags
-    parser.add_argument("--skip-housing", action="store_true", help="Skip housing scenario")
-    parser.add_argument("--skip-health", action="store_true", help="Skip health scenario")
-    parser.add_argument("--skip-safety", action="store_true", help="Skip negative transfer scenario")
-
-    # CNN scenario flags
-    parser.add_argument("--skip-cnn", action="store_true", help="Skip CNN comparison")
-    parser.add_argument("--cnn-only", action="store_true", help="Run only CNN scenarios (skip ML)")
-    parser.add_argument("--scratch-epochs", type=int, default=10, help="CNN scratch training epochs")
-    parser.add_argument("--transfer-epochs", type=int, default=10, help="CNN transfer training epochs")
-    parser.add_argument("--lr", type=float, default=0.001, help="CNN learning rate")
-    parser.add_argument("--weight-decay", type=float, default=0.01, help="Weight decay (L2 regularization)")
-    parser.add_argument("--n-source", type=int, default=500, help="Number of source images")
-    parser.add_argument("--n-target-train", type=int, default=100, help="Number of target training images")
-    parser.add_argument("--n-target-test", type=int, default=50, help="Number of target test images")
-    parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
-
-    # Transformer scenario flags
-    parser.add_argument("--skip-transformer", action="store_true", help="Skip transformer scenario")
-    parser.add_argument("--source-epochs", type=int, default=5, help="Transformer source training epochs")
-    parser.add_argument("--target-epochs", type=int, default=5, help="Transformer target training epochs")
-    parser.add_argument("--lora-lr", type=float, default=5e-4, help="LoRA learning rate")
-    parser.add_argument("--lora-rank", type=int, default=4, help="LoRA rank")
-    parser.add_argument("--max-source-samples", type=int, default=2000, help="Max source samples for transformers")
-    parser.add_argument("--max-target-samples", type=int, default=800, help="Max target samples for transformers")
-    parser.add_argument("--max-length", type=int, default=96, help="Max sequence length")
-
-    # Convenience flags
-    parser.add_argument("--quick", action="store_true", help="Quick demo (1 seed, 2 CNNs, skip transformers)")
-    parser.add_argument("--full", action="store_true", help="Full demo (5 seeds, all architectures)")
-    parser.add_argument("--compare-architectures", action="store_true", help="Comprehensive architecture comparison")
-    parser.add_argument("--save-json", type=str, default=None, help="Save results to JSON")
-
+    parser = argparse.ArgumentParser(description="Amazon Sustainability Challenge — Comprehensive Demo")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seeds", type=int, default=3)
+    parser.add_argument("--target-frac", type=float, default=0.25)
+    parser.add_argument("--skip-housing", action="store_true")
+    parser.add_argument("--skip-health", action="store_true")
+    parser.add_argument("--skip-safety", action="store_true")
+    parser.add_argument("--skip-cnn", action="store_true")
+    parser.add_argument("--cnn-only", action="store_true")
+    parser.add_argument("--scratch-epochs", type=int, default=15)
+    parser.add_argument("--transfer-epochs", type=int, default=15)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument("--n-source", type=int, default=800)
+    parser.add_argument("--n-target-train", type=int, default=400)
+    parser.add_argument("--n-target-test", type=int, default=200)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--skip-transformer", action="store_true")
+    parser.add_argument("--source-epochs", type=int, default=5)
+    parser.add_argument("--target-epochs", type=int, default=5)
+    parser.add_argument("--lora-lr", type=float, default=5e-4)
+    parser.add_argument("--lora-rank", type=int, default=4)
+    parser.add_argument("--max-source-samples", type=int, default=2000)
+    parser.add_argument("--max-target-samples", type=int, default=800)
+    parser.add_argument("--max-length", type=int, default=96)
+    parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--full", action="store_true")
+    parser.add_argument("--save-json", type=str, default=None)
     args = parser.parse_args()
 
-    # Apply convenience flags
     if args.quick:
         args.seeds = 1
         args.skip_transformer = True
-        args.scratch_epochs = 5
-        args.transfer_epochs = 5
+        args.scratch_epochs = 8
+        args.transfer_epochs = 8
+        args.n_source = 400
+        args.n_target_train = 200
+        args.n_target_test = 100
     if args.full:
         args.seeds = 5
-        args.compare_architectures = True
+        args.scratch_epochs = 20
+        args.transfer_epochs = 20
+        args.n_source = 1200
+        args.n_target_train = 600
+        args.n_target_test = 300
     if args.cnn_only:
         args.skip_housing = True
         args.skip_health = True
         args.skip_safety = True
         args.skip_transformer = True
 
-    # Print demo header
-    print(DEMO_HEADER)
-    print(f"Configuration:")
-    print(f"  Seeds: {args.seeds}  │  Target Data Fraction: {args.target_frac:.0%}")
-    print(f"  Device: {DEVICE}  │  GPU: {GPU_NAME}  │  Power: {GPU_POWER_WATTS:.0f}W")
-    print(f"  CNN Epochs: Scratch={args.scratch_epochs}, Transfer={args.transfer_epochs}")
+    print(get_demo_header())
+    print(f"  Run Configuration:")
+    print(f"    Seeds: {args.seeds}  │  Target Fraction: {args.target_frac:.0%}")
+    print(f"    Device: {DEVICE}  │  Hardware: {HW_NAME}")
+    print(f"    Carbon method: {carbon_method_description()}")
+    print(f"    CNN Epochs: scratch={args.scratch_epochs}, transfer={args.transfer_epochs}")
+    print(f"    Dataset: source={args.n_source}, target_train={args.n_target_train}, "
+          f"target_test={args.n_target_test}")
+    print(f"    Image size: {IMG_SIZE}×{IMG_SIZE}  │  Batch: {args.batch_size}")
     print()
 
     all_results = {}
 
-    # ========================================================================
-    # CLASSICAL ML SCENARIOS
-    # ========================================================================
-
     if not args.cnn_only:
         if not args.skip_housing:
-            print_section_header("SCENARIO 1: Classical ML - Housing Affordability",
-                                "Transfer learning for regression under geographic shift")
+            print_section_header("SCENARIO 1: Classical ML — Housing Affordability",
+                                 "Transfer learning for regression under geographic shift")
             set_seed(args.seed)
-            housing_runs = [run_ml_housing_scenario(args.seed + i, args.target_frac)
-                           for i in range(args.seeds)]
+            housing_runs = [run_ml_housing_scenario(args.seed + i, args.target_frac) for i in range(args.seeds)]
             all_results["housing"] = housing_runs
             print_ml_scenario_results(housing_runs[0]["title"], housing_runs,
-                                     ["scratch", "regularized", "bayesian"], "R² Score", pct=False)
+                                      ["scratch", "regularized", "bayesian"], "R² Score")
 
         if not args.skip_health:
-            print_section_header("SCENARIO 2: Classical ML - Health Screening",
-                                "Transfer learning for classification under tumor size shift")
+            print_section_header("SCENARIO 2: Classical ML — Health Screening",
+                                 "Transfer learning for classification under tumor size shift")
             set_seed(args.seed)
-            health_runs = [run_ml_health_scenario(args.seed + 100 + i, args.target_frac)
-                          for i in range(args.seeds)]
+            health_runs = [run_ml_health_scenario(args.seed + 100 + i, args.target_frac) for i in range(args.seeds)]
             all_results["health"] = health_runs
             print_ml_scenario_results(health_runs[0]["title"], health_runs,
-                                     ["scratch", "bayesian"], "Accuracy", pct=True)
+                                      ["scratch", "bayesian"], "Accuracy", pct=True)
 
         if not args.skip_safety:
-            print_section_header("SCENARIO 3: Classical ML - Negative Transfer Safety",
-                                "Guardrail prevents wasteful compute on harmful transfer")
+            print_section_header("SCENARIO 3: Classical ML — Negative Transfer Safety",
+                                 "Guardrail prevents wasteful compute on harmful transfer")
             safety = run_ml_negative_transfer_scenario(args.seed)
             all_results["safety"] = safety
-
-            gate_status = "SAFE TO TRANSFER" if safety['decision']['recommend'] else "SKIP TRANSFER"
-            print(f"  Transfer Gate Decision: [{gate_status}]")
-            print(f"  Distribution Metrics: MMD²={safety['decision']['mmd']:.4f} | "
-                  f"PAD={safety['decision']['pad']:.4f} | "
-                  f"KS-shift={safety['decision']['ks_fraction']:.0%}")
+            gate = "SAFE TO TRANSFER" if safety['decision']['recommend'] else "SKIP TRANSFER"
+            print(f"  Transfer Gate: [{gate}]")
+            print(f"  Distribution: MMD²={safety['decision']['mmd']:.4f} | "
+                  f"PAD={safety['decision']['pad']:.4f} | KS-shift={safety['decision']['ks_fraction']:.0%}")
             print(f"\n  {'Method':<20} MSE            Performance")
             print("  " + "-" * 50)
             print(f"  {'Scratch':<20} {safety['scratch_mse']:.4f}       [BASELINE]")
@@ -1927,151 +1531,25 @@ def main():
                   f"[DEGRADED {safety['naive_mse']/safety['scratch_mse']:.1f}x]")
             print(f"  {'Safe Transfer':<20} {safety['safe_mse']:.4f}       [RECOVERED]")
 
-    # ========================================================================
-    # DEEP LEARNING CNN SCENARIO
-    # ========================================================================
-
     if not args.skip_cnn:
-        # Create synthetic medical image dataset
-        data = create_medical_dataloaders(
-            args.n_source, args.n_target_train, args.n_target_test,
-            IMG_SIZE, NUM_MEDICAL_CLASSES, args.batch_size, seed=args.seed
-        )
-
-        # Run comprehensive CNN comparison
-        cnn_results = compare_all_architectures(args, data, args.seed)
-        all_results["cnn_comparison"] = cnn_results
-
-    # ========================================================================
-    # DEEP LEARNING TRANSFORMER SCENARIO
-    # ========================================================================
-
-    if not args.skip_transformer:
-        try:
-            from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained(TRANSFORMER_MODEL_NAME)
-
-            set_seed(args.seed)
-            dl_result = run_dl_sentiment_scenario(args, tokenizer, args.seed)
-            if dl_result is not None:
-                all_results["transformer"] = dl_result
-        except ImportError:
-            print_section_header("Transformer Scenario - SKIPPED")
-            print("  ⚠️  Install transformers and datasets to run transformer scenario:")
-            print("     pip install transformers datasets")
-
-    # ========================================================================
-    # FINAL SUSTAINABILITY SUMMARY
-    # ========================================================================
+        dl_results = run_dl_comprehensive_scenario(args, DEVICE, args.seed, verbose=True)
+        all_results["dl_comprehensive"] = dl_results
 
     print_sustainability_summary(all_results)
+    print_final_narrative(all_results)
 
-    print_section_header("CONCLUSION & KEY FINDINGS")
-    print("""
-  HackForge demonstrates that transfer learning is not merely a performance optimization
-  but a fundamental sustainability imperative for modern AI development. Through systematic
-  measurement across 13+ CNN architectures and real-world medical imaging validation:
-
-  [1] MINIMIZE COMPUTATIONAL WASTE THROUGH COMPREHENSIVE ARCHITECTURES
-
-      Classical ML: Algorithmic Efficiency
-      - 85-99% CO2 reduction via closed-form Bayesian solutions
-      - Zero gradient steps for Bayesian transfer
-      - Perfect for prototyping, edge cases, tabular data
-
-      Deep Learning CNNs: Architectural Diversity
-      - VGG Family: Simple, interpretable, good baselines
-      - ResNet Family: Skip connections, state-of-the-art accuracy
-      - Inception: Multi-scale features for complex patterns
-      - EfficientNet: Best accuracy per parameter (compound scaling)
-      - MobileNet: Optimized for mobile/edge deployment
-      - Each architecture offers unique efficiency-accuracy tradeoffs
-
-      Transfer Learning Strategies:
-      - Frozen backbone: 5-10x fewer trainable parameters
-      - Full fine-tuning: Best accuracy, higher compute
-      - Progressive unfreezing: Balanced approach
-      - 20-60% CO2 reduction depending on architecture and strategy
-
-  [2] REAL-WORLD MEDICAL IMAGING VALIDATION
-
-      Use Case: Breast Cancer Histopathology Classification
-      - Problem: Limited labeled medical data, expensive annotation
-      - Solution: Transfer learning from ImageNet to medical domain
-      - Impact: 10x less data needed, accessible to underserved hospitals
-      - Critical: False negatives cost lives - accuracy + efficiency both matter
-
-      Best Practices:
-      - Start with EfficientNet or ResNet for best accuracy/efficiency
-      - Use frozen backbone for rapid prototyping (faster, less CO2)
-      - Full fine-tune only when accuracy demands it
-      - Deploy efficient models (MobileNet, EfficientNetB0) on edge devices
-
-  [3] COMPREHENSIVE ECOLOGICAL IMPACT TRACKING
-
-      Per-Architecture Carbon Footprinting:
-      - Real-time monitoring via NVML Energy API
-      - Comparison across 13 architectures + 4 strategies each
-      - Identifies most efficient architecture for each use case
-      - Enables informed deployment decisions
-
-      Real-World Equivalents:
-      - CO2 saved = smartphone charges, car km, tree absorption
-      - At 10,000 experiments: 20+ kg CO2 = 50 km driving
-      - Parameter efficiency = smaller models = edge deployment
-
-  [4] GREENER AI DEVELOPMENT PRACTICES
-
-      Safety & Efficiency:
-      - Transfer safety gate prevents harmful negative transfer
-      - Parameter-efficient methods (frozen backbone, LoRA)
-      - Model reuse across hospitals, imaging protocols, patient demographics
-      - Regularization (dropout, BatchNorm, weight decay) prevents overfitting
-      - Early stopping, LR scheduling reduce training waste
-
-  [IMPACT STATEMENT]
-
-  Medical AI in underserved communities depends on sustainable practices:
-
-  • When models require 60% less training CO2, hospitals in developing countries
-    can afford to deploy AI for cancer detection
-
-  • When parameter counts drop 5-10x, models run on hospital servers instead of
-    requiring cloud infrastructure
-
-  • When training takes hours instead of days, doctors get life-saving tools faster
-
-  • Lower compute = democratized healthcare AI = more lives saved
-
-  Transfer learning makes sustainable AI the default, not the exception.
-
-  [PROJECT REPOSITORY]
-  Full implementation, documentation, and reproducible experiments:
-  https://github.com/pirlapal/TeamHackForgeAmazon
-""")
-
-    # Save results
     if args.save_json:
+        def _ser(obj):
+            if isinstance(obj, (np.integer,)): return int(obj)
+            if isinstance(obj, (np.floating,)): return float(obj)
+            if isinstance(obj, np.ndarray): return obj.tolist()
+            if isinstance(obj, dict): return {k: _ser(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)): return [_ser(v) for v in obj]
+            return obj
         with open(args.save_json, "w", encoding="utf-8") as f:
-            # Convert results to JSON-serializable format
-            json_results = {}
-            for key, value in all_results.items():
-                # Handle nested structures
-                if isinstance(value, dict):
-                    json_results[key] = {k: str(v) if not isinstance(v, (int, float, str, list, dict)) else v
-                                        for k, v in value.items()}
-                elif isinstance(value, list):
-                    json_results[key] = [str(item) if not isinstance(item, (int, float, str, list, dict)) else item
-                                        for item in value]
-                else:
-                    json_results[key] = str(value)
-
-            json.dump({
-                "args": vars(args),
-                "device": str(DEVICE),
-                "gpu": GPU_NAME,
-                "results": json_results,
-            }, f, indent=2, default=str)
+            json.dump({"args": vars(args), "device": str(DEVICE), "hardware": HW_NAME,
+                        "carbon_method": CARBON_METHOD, "results": _ser(all_results)},
+                       f, indent=2, default=str)
         print(f"\n  ✓ Results saved to {args.save_json}")
 
 
