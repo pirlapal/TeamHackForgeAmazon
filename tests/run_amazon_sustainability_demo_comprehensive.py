@@ -100,10 +100,10 @@ OFFICIAL_PARAMS = {
     "MobileNetV2":    {"total":  3_504_872, "size_mb": 13.6},
 }
 
-# Detect whether torchvision pretrained weights are available
+# TorchVision is REQUIRED for pretrained transfer learning in DL section
 _HAS_TORCHVISION = False
 try:
-    from torchvision.models import resnet50  # noqa: F401
+    from torchvision.models import resnet50, efficientnet_b0, mobilenet_v2  # noqa: F401
     _HAS_TORCHVISION = True
 except ImportError:
     pass
@@ -214,7 +214,7 @@ def get_demo_header():
     ResNet50       25.6M params   97.8 MB   Gold standard, skip connections
     EfficientNetB0  5.3M params   20.5 MB   Best accuracy/param, compound scaling
     MobileNetV2     3.5M params   13.6 MB   Edge deployment, depthwise separable
-    Backend:     {"TorchVision pretrained (ImageNet weights)" if _HAS_TORCHVISION else "⚠ Lightweight fallback models (torchvision not installed)"}
+    Backend:     TorchVision pretrained (ImageNet weights)
 
   EVALUATION
     Priority:    Sensitivity (minimize missed cancers)
@@ -580,70 +580,37 @@ class MedicalCNNClassifier(nn.Module):
                 param.requires_grad = True
 
 
-def _build_fallback_resnet():
-    class ResBlock(nn.Module):
-        def __init__(self, in_ch, out_ch, stride=1):
-            super().__init__()
-            self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride, 1, bias=False)
-            self.bn1 = nn.BatchNorm2d(out_ch)
-            self.conv2 = nn.Conv2d(out_ch, out_ch, 3, 1, 1, bias=False)
-            self.bn2 = nn.BatchNorm2d(out_ch)
-            self.shortcut = nn.Sequential()
-            if stride != 1 or in_ch != out_ch:
-                self.shortcut = nn.Sequential(
-                    nn.Conv2d(in_ch, out_ch, 1, stride, bias=False),
-                    nn.BatchNorm2d(out_ch))
-        def forward(self, x):
-            out = F.relu(self.bn1(self.conv1(x)))
-            out = self.bn2(self.conv2(out))
-            return F.relu(out + self.shortcut(x))
-    backbone = nn.Sequential(
-        nn.Conv2d(3, 64, 7, 2, 3, bias=False), nn.BatchNorm2d(64),
-        nn.ReLU(inplace=True), nn.MaxPool2d(3, 2, 1),
-        ResBlock(64, 64), ResBlock(64, 128, 2),
-        ResBlock(128, 256, 2), ResBlock(256, 512, 2))
-    return backbone, 512
-
-
-def _build_fallback_mobile():
-    backbone = nn.Sequential(
-        nn.Conv2d(3, 32, 3, 2, 1, bias=False), nn.BatchNorm2d(32), nn.ReLU6(inplace=True),
-        nn.Conv2d(32, 32, 3, 1, 1, groups=32, bias=False), nn.BatchNorm2d(32), nn.ReLU6(inplace=True),
-        nn.Conv2d(32, 64, 1, bias=False), nn.BatchNorm2d(64),
-        nn.Conv2d(64, 64, 3, 2, 1, groups=64, bias=False), nn.BatchNorm2d(64), nn.ReLU6(inplace=True),
-        nn.Conv2d(64, 128, 1, bias=False), nn.BatchNorm2d(128),
-        nn.Conv2d(128, 128, 3, 2, 1, groups=128, bias=False), nn.BatchNorm2d(128), nn.ReLU6(inplace=True),
-        nn.Conv2d(128, 256, 1, bias=False), nn.BatchNorm2d(256), nn.ReLU6(inplace=True))
-    return backbone, 256
-
-
 def build_cnn_model(architecture, num_classes=NUM_MEDICAL_CLASSES):
+    """Build CNN with PRETRAINED ImageNet weights - torchvision REQUIRED."""
+    if not _HAS_TORCHVISION:
+        raise ImportError(
+            f"\n{'='*80}\n"
+            f"CRITICAL: TorchVision is required for pretrained transfer learning.\n\n"
+            f"Without TorchVision, we cannot load pretrained ImageNet weights, and the\n"
+            f"'frozen backbone' strategy would just be freezing random initialization\n"
+            f"(not meaningful transfer learning).\n\n"
+            f"Install with:  pip install torchvision\n"
+            f"{'='*80}\n"
+        )
+
     if architecture == "ResNet50":
-        try:
-            from torchvision.models import resnet50, ResNet50_Weights
-            base = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-            backbone = nn.Sequential(*list(base.children())[:-2])
-            out_dim = 2048
-        except ImportError:
-            backbone, out_dim = _build_fallback_resnet()
+        from torchvision.models import resnet50, ResNet50_Weights
+        base = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+        backbone = nn.Sequential(*list(base.children())[:-2])
+        out_dim = 2048
     elif architecture == "EfficientNetB0":
-        try:
-            from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
-            base = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
-            backbone = base.features
-            out_dim = 1280
-        except ImportError:
-            backbone, out_dim = _build_fallback_mobile()
+        from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
+        base = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
+        backbone = base.features
+        out_dim = 1280
     elif architecture == "MobileNetV2":
-        try:
-            from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
-            base = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
-            backbone = base.features
-            out_dim = 1280
-        except ImportError:
-            backbone, out_dim = _build_fallback_mobile()
+        from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
+        base = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
+        backbone = base.features
+        out_dim = 1280
     else:
         raise ValueError(f"Unknown architecture: {architecture}")
+
     return MedicalCNNClassifier(backbone, out_dim, num_classes, dropout=0.5, hidden_dim=256)
 
 
@@ -1061,9 +1028,6 @@ def run_dl_comprehensive_scenario(args, device, seed, verbose=True):
     print(f"  Official TorchVision full-model counts (reference only):")
     for name, info in OFFICIAL_PARAMS.items():
         print(f"    {name:<16} {info['total']:>12,} params  {info['size_mb']:>6.1f} MB")
-    if not _HAS_TORCHVISION:
-        print(f"\n  ⚠ torchvision not installed. Using lightweight fallback architectures.")
-        print(f"    Experiment param counts will be much smaller than official counts above.")
 
     data_full = create_medical_dataloaders(
         n_source=args.n_source, n_target_train=args.n_target_train,
@@ -1082,13 +1046,8 @@ def run_dl_comprehensive_scenario(args, device, seed, verbose=True):
 
     if arch_results:
         # Table note
-        if _HAS_TORCHVISION:
-            print(f"\n  Note: 'Exp Params' = TorchVision backbone (minus original classifier)")
-            print(f"        + our custom 2-layer head. Smaller than official full-model counts.")
-        else:
-            print(f"\n  ⚠ torchvision not installed — using lightweight fallback architectures.")
-            print(f"    Param counts below are for the FALLBACK models, NOT official")
-            print(f"    ResNet50/EfficientNetB0/MobileNetV2. Install torchvision for real weights.")
+        print(f"\n  Note: 'Exp Params' = TorchVision backbone (minus original classifier)")
+        print(f"        + our custom 2-layer head. Smaller than official full-model counts.")
 
         # Fixed-width table: W=108 inner chars
         W = 108
@@ -1263,16 +1222,21 @@ def print_sustainability_summary(all_results):
 
     print(f"\n  AGGREGATE CARBON METRICS (this run)")
 
-    # Build honest description of what's aggregated
-    agg_parts = []
+    # Build clear descriptions of what's in each total
+    scratch_parts = []
+    transfer_parts = []
     if "housing" in all_results or "health" in all_results:
-        agg_parts.append("ML scratch/Bayesian")
+        scratch_parts.append("ML from-scratch")
+        transfer_parts.append("ML Bayesian transfer")
     if "dl_comprehensive" in all_results and all_results["dl_comprehensive"].get("arch_results"):
-        agg_parts.append("DL scratch/frozen per architecture")
-    agg_desc = " + ".join(agg_parts) if agg_parts else "N/A"
+        scratch_parts.append("DL from-scratch per architecture")
+        transfer_parts.append("DL frozen backbone per architecture")
 
-    print(f"  Scratch  = sum of scratch-strategy CO2 across: {agg_desc}")
-    print(f"  Transfer = sum of transfer-strategy CO2 across: {agg_desc}")
+    scratch_desc = " + ".join(scratch_parts) if scratch_parts else "N/A"
+    transfer_desc = " + ".join(transfer_parts) if transfer_parts else "N/A"
+
+    print(f"  Scratch  = {scratch_desc}")
+    print(f"  Transfer = {transfer_desc}")
     print(f"\n  {'Metric':<32} {'Scratch':>14} {'Transfer':>14} {'Reduction':>10}")
     print("  " + "-" * 75)
     print(f"  {'Total CO2':<32} {total_scratch_co2:.2e} kg  {total_transfer_co2:.2e} kg  {co2_saved_pct:.1f}%")
@@ -1301,9 +1265,7 @@ def print_sustainability_summary(all_results):
     if "dl_comprehensive" in all_results and all_results["dl_comprehensive"].get("arch_results"):
         print(f"\n  PARAMETER EFFICIENCY (frozen backbone vs scratch)")
         print(f"  Frozen backbone trains only the classifier head. The backbone")
-        print(f"  weights are reused from {'ImageNet pretraining' if _HAS_TORCHVISION else 'fallback init'} (zero new learning).")
-        if not _HAS_TORCHVISION:
-            print(f"  ⚠ Using lightweight fallback models (torchvision not installed).")
+        print(f"  weights are reused from ImageNet pretraining (zero new learning).")
         print(f"\n  {'Architecture':<16} {'Exp Params':>13} {'Scratch trains':>16} {'Frozen trains':>15} {'Reduction':>10}")
         print("  " + "-" * 75)
         for ar in all_results["dl_comprehensive"]["arch_results"]:
@@ -1400,9 +1362,8 @@ def print_final_narrative(all_results):
         else:
             ld_sentence = "  - Low-data regime: scratch and transfer comparable across tested regimes"
 
-        tv_note = "" if _HAS_TORCHVISION else " (lightweight fallback — install torchvision for real weights)"
         print(f"""
-  WHAT WE MEASURED (deep learning — synthetic proof-of-concept{tv_note})
+  WHAT WE MEASURED (deep learning — synthetic proof-of-concept)
   ─────────────────────────────────────────────────────────────
   - Frozen backbone: {co2_range} CO2 reduction, {param_range} fewer trainable params
 {ld_sentence}
